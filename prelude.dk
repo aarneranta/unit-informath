@@ -1,0 +1,69 @@
+(; prelude.dk: the encoding of Unit's type theory in Dedukti (see README.md) ;)
+
+(; levels: a join-semilattice with an inflationary successor, lz the least ;)
+Lvl : Type.
+lz : Lvl.
+ls : Lvl -> Lvl.
+defac lmax [Lvl].
+[l] lmax lz l --> l.
+[l] lmax l l --> l.
+[l, m] lmax (ls l) (ls m) --> ls (lmax l m).
+[l] lmax l (ls l) --> ls l.
+[l] lmax l (ls (ls l)) --> ls (ls l).
+[l] lmax l (ls (ls (ls l))) --> ls (ls (ls l)).
+
+(; universes a la Tarski, cumulative by lift.  A code is kept at its least
+   level with one lift outside: the rules below move lifts out of the type
+   formers and of the terms that carry types, so that a type has one code
+   whatever the level it is used at.  lift l m is used only for l <= m
+   (the translator lifts only where Unit's cumulativity does); its type does
+   not say so, as l <= m is not an equation Dedukti could use ;)
+U : Lvl -> Type.
+def El : l : Lvl -> U l -> Type.
+u : l : Lvl -> U (ls l).
+[l] El _ (u l) --> U l.
+def lift : l : Lvl -> m : Lvl -> U l -> U m.
+[l, m, a] El _ (lift l m a) --> El l a.
+[l, a] lift l l a --> a.
+[j, k, l, a] lift k l (lift j k a) --> lift j l a.
+
+(; Pi, its parts at their own levels ;)
+def pi : l1 : Lvl -> l2 : Lvl -> a : U l1 -> (El l1 a -> U l2) -> U (lmax l1 l2).
+[l1, l2, a, b] El _ (pi l1 l2 a b) --> x : El l1 a -> El l2 (b x).
+[j, k1, k2, a, b] pi k1 k2 (lift j k1 a) b --> lift (lmax j k2) (lmax k1 k2) (pi j k2 a b).
+[k1, j, k2, a, b] pi k1 k2 a (x => lift j k2 (b x)) --> lift (lmax k1 j) (lmax k1 k2) (pi k1 j a (x => b x)).
+
+(; Sigma, with surjective pairing ;)
+def sigma : l1 : Lvl -> l2 : Lvl -> a : U l1 -> (El l1 a -> U l2) -> U (lmax l1 l2).
+[j, k1, k2, a, b] sigma k1 k2 (lift j k1 a) b --> lift (lmax j k2) (lmax k1 k2) (sigma j k2 a b).
+[k1, j, k2, a, b] sigma k1 k2 a (x => lift j k2 (b x)) --> lift (lmax k1 j) (lmax k1 k2) (sigma k1 j a (x => b x)).
+def pair : l1 : Lvl -> l2 : Lvl -> a : U l1 -> b : (El l1 a -> U l2) -> x : El l1 a -> El l2 (b x) ->
+           El (lmax l1 l2) (sigma l1 l2 a b).
+def fst : l1 : Lvl -> l2 : Lvl -> a : U l1 -> b : (El l1 a -> U l2) -> El (lmax l1 l2) (sigma l1 l2 a b) -> El l1 a.
+def snd : l1 : Lvl -> l2 : Lvl -> a : U l1 -> b : (El l1 a -> U l2) -> p : El (lmax l1 l2) (sigma l1 l2 a b) ->
+          El l2 (b (fst l1 l2 a b p)).
+[l1, l2, a, b, x, y] fst l1 l2 a b (pair l1 l2 a b x y) --> x.
+[l1, l2, a, b, x, y] snd l1 l2 a b (pair l1 l2 a b x y) --> y.
+[l1, l2, a, b, p] pair l1 l2 a b (fst l1 l2 a b p) (snd l1 l2 a b p) --> p.
+[j, k1, k2, a, b, x, y] pair k1 k2 (lift j k1 a) b x y --> pair j k2 a b x y.
+[k1, j, k2, a, b, x, y] pair k1 k2 a (z => lift j k2 (b z)) x y --> pair k1 j a (z => b z) x y.
+[j, k1, k2, a, b, p] fst k1 k2 (lift j k1 a) b p --> fst j k2 a b p.
+[k1, j, k2, a, b, p] fst k1 k2 a (z => lift j k2 (b z)) p --> fst k1 j a (z => b z) p.
+[j, k1, k2, a, b, p] snd k1 k2 (lift j k1 a) b p --> snd j k2 a b p.
+[k1, j, k2, a, b, p] snd k1 k2 a (z => lift j k2 (b z)) p --> snd k1 j a (z => b z) p.
+
+(; the end of a record ;)
+one : U lz.
+tt : El lz one.
+
+(; identity types, with J computing on refl ;)
+def id : l : Lvl -> a : U l -> El l a -> El l a -> U l.
+[j, k, a, x, y] id k (lift j k a) x y --> lift j k (id j a x y).
+def refl : l : Lvl -> a : U l -> x : El l a -> El l (id l a x x).
+[j, k, a, x] refl k (lift j k a) x --> refl j a x.
+def J : l : Lvl -> a : U l -> x : El l a -> m : Lvl -> C : (y : El l a -> El l (id l a x y) -> U m) ->
+        El m (C x (refl l a x)) -> y : El l a -> p : El l (id l a x y) -> El m (C y p).
+[j, l, a, x, m, C, d, y, p] J l (lift j l a) x m C d y p --> J j a x m C d y p.
+[l, a, x, m, C, d] J l a x m C d x (refl l a x) --> d.
+
+(; the program ;)
