@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unit informalized</title>
+<style>
+:root { --fg: #1d1d1f; --muted: #555; --accent: #1f4e79; --bg: #ffffff; --card: #f6f8fa; --line: #e1e4e8; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6e6e6; --muted: #a8a8a8; --accent: #8fb8e8; --bg: #16181c; --card: #1f2329; --line: #333a42; }
+}
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--fg); background: var(--bg);
+       max-width: 760px; margin: 2.5rem auto; padding: 0 16px; line-height: 1.55; }
+h1 { font-size: 1.6rem; margin-bottom: .2rem; }
+.sub { color: var(--muted); margin-top: 0; }
+a { color: var(--accent); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1.1rem; margin: 1rem 0; }
+.card h2 { font-size: 1.05rem; margin: 0 0 .3rem; }
+.card p { margin: .2rem 0; }
+footer { color: var(--muted); font-size: .85rem; margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+</style>
+</head>
+<body>
+<h1>Unit informalized</h1>
+<p class="sub">Gauss's lemma and polynomial gcd domains: from Thierry Coquand's checker Unit, through Dedukti, to English by Informath</p>
+
+<p>The development <a href="https://github.com/coquand/unit/tree/main/sag/gcddomain"><code>sag/gcddomain</code></a> of
+<a href="https://github.com/coquand/unit">Unit</a> proves Gauss's lemma and that a polynomial ring over a gcd domain is a gcd domain.
+Thierry Coquand has written its proof informally, file by file:
+<a href="https://github.com/coquand/unit/blob/main/doc/gcddomain.pdf"><i>Gauss's lemma and polynomial gcd domains: an informal proof following the Unit files</i></a>.
+Here the development is translated to Dedukti and read by
+<a href="https://github.com/GrammaticalFramework/informath">Informath</a>, and its proofs are compared with that text.</p>
+
+<div class="card">
+<h2><a href="proofs.html">Proofs of divisibility</a></h2>
+<p>Four proofs (<code>div-refl</code>, <code>div-of-zero</code>, <code>div-trans</code>, <code>euclid</code>): the Unit source,
+the steps in Unit and Dedukti, Informath's proof text, and the proof in Coquand's text, linked by the numbers of the proof text.</p>
+</div>
+
+<div class="card">
+<h2><a href="proofs-gauss.html">Proofs of Gauss's lemma</a></h2>
+<p>Eleven proofs of the steps of Gauss's lemma (modules <code>Tail</code>, <code>PrimStep.One</code>, <code>PrimStep</code>),
+each an item of the proof in Coquand's text.</p>
+</div>
+
+<div class="card">
+<h2><a href="gcddomain-doc.pdf">The development, informalized</a> (PDF)</h2>
+<p>All the statements and definitions of the development read by Informath, one section per Unit segment.</p>
+</div>
+
+<div class="card">
+<h2><a href="unit-informath-slides.pdf">Slides</a> (PDF)</h2>
+<p>What has been done: the translation, the informalization, the proofs and their alignment with the text.</p>
+</div>
+
+<footer>
+Made by <a href="https://github.com/aarneranta/unit-informath">unit-informath</a> (<code>scripts/site.sh</code>).
+Aarne Ranta, with Claude Code, November 2026.
+</footer>
+</body>
+</html>

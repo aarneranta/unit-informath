@@ -89,6 +89,13 @@ unit/doc/gcddomain.tex) translates all its 612 declarations; dk accepts all
 but one (689 declarations and 220 rule sets, `FunExtUA.FE.totC` demoted,
 see below).
 
+## The site
+
+https://aarneranta.github.io/unit-informath/ shows the proof pages, the
+informal document and the slides. It is the directory `docs/` of `main`,
+made by `sh scripts/site.sh` (with `INFORMATH_ROOT` set), which runs the
+whole chain below and copies its results there.
+
 ## Informalization: the informal view
 
 unit2dk's Dedukti is checkable, not readable: universe levels, codes a la
