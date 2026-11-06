@@ -90,12 +90,23 @@ lname x0
 ------------------------------------------------------------------------
 -- What is known of the declarations translated so far
 
-data Param = PTm Name Val | PLv Name
+-- a parameter of a lifted constant: a term or a level of its segments, or
+-- (for the derived members of a record) the element of the record, with
+-- its Dedukti name and its type
+data Param = PTm Name Val | PLv Name | PSelf String Val
 
 data Info = Info
   { iParams :: [Param]                -- the parameters of its segments, outermost first
   , iData   :: Maybe ([Name], Exp)    -- a data type: the names of its lambdas, its type
   , iPrim   :: Bool                   -- a primitive notion (a parameter at top level)
+  , iRec    :: Maybe RecInfo          -- a record type
+  }
+
+-- a record R (heads) { fields }: R : (params) (heads) -> U l
+data RecInfo = RecInfo
+  { rHeads  :: [Param]                -- its head parameters
+  , rFields :: [(Name, Exp)]          -- its fields and their types
+  , rLvl    :: Lvl                    -- the level of R[ps], in the level names of its declaration
   }
 
 type Glob = M.Map Id Info
@@ -187,7 +198,8 @@ readNf tc t v = case v of
     VRec _ tel r -> readStruct tc tel r (map snd fs)
     t' -> Left ("a struct at the type " ++ showT tc t')
   VCon c vs -> case whnfT tc t of
-    VSum st _ cs r -> case lookup c cs of
+    VSum _ (_:_) _ _ _ -> Left "an indexed family: not translated yet"
+    VSum st _ _ cs r -> case lookup c (plainCons cs) of
       Just tel -> do
         let d = dataId st
         as <- dataArgs tc d r
@@ -195,6 +207,13 @@ readNf tc t v = case v of
         Right (dapp (dv (cname d c)) (as ++ fs))
       Nothing -> Left ("constructor " ++ c ++ " not in its type")
     t' -> Left ("a constructor at the type " ++ showT tc t')
+  VInst m r -> do
+    -- new R[ps, v1, .., vn]: the constructor at the parameters and the fields
+    let rid = dataId (modId m)
+        heads = [ (h, lookupDyn r h) | h <- recordHeads m ]
+    as <- recArgs tc m heads
+    ds <- mapM (\(y, ta) -> readNf tc (eval r ta) (lookupDyn r y)) (recordFieldUnits m)
+    Right (dapp (dv (cname rid "mk")) (as ++ ds))
   VRefl a -> case whnfT tc t of
     VId ta _ _ -> do
       (ca, la) <- readCode tc ta
@@ -214,7 +233,7 @@ readNf tc t v = case v of
 isTypeVal :: Val -> Bool
 isTypeVal v = case v of
   VU _ -> True; VPi _ _ -> True; VSig _ _ _ -> True; VId _ _ _ -> True
-  VSum{} -> True; VRec{} -> True
+  VSum{} -> True; VRec{} -> True; VSegT{} -> True
   _ -> False
 
 closName :: Clos -> Name
@@ -239,6 +258,12 @@ readFields _ _ _ _ = Left "constructor arity"
 readNe :: TC -> Val -> T (DExp, Val)
 readNe tc v = case v of
   VGen k -> maybe (Left ("unknown variable #" ++ show k)) Right (M.lookup k (tcGens tc))
+  -- a variable of record type: a bound variable (%vk), or a parameter
+  VVar x _ _
+    | take 2 x == "%v" -> maybe (Left ("unknown variable " ++ x)) Right (M.lookup (read (drop 2 x)) (tcGens tc))
+    | otherwise -> do
+        t <- tyOf x
+        Right (dv (lname x), t)
   VConst x _ -> case M.lookup x (tcGlob tc) of
     Just i | iPrim i -> do
       t <- tyOf x
@@ -287,6 +312,13 @@ readNe tc v = case v of
     (dp, tp) <- readNe tc p
     case whnfT tc tp of
       VRec _ tel r -> projField tc dp p tel r l
+      -- a field of a record: its selector at the parameters and the element
+      VSegT md fs -> do
+        as <- recArgs tc md fs
+        case lookup l (recordFieldUnits md) of
+          Just ta -> Right ( dapp (dv (cname (dataId (modId md)) l)) (as ++ [dp])
+                           , eval (selfEnv md fs p) ta )
+          Nothing -> Left ("no field " ++ l ++ " in " ++ modId md)
       t' -> Left ("the projection ." ++ l ++ " of something of type " ++ showT tc t')
   VIdJ a x c d y p -> do
     (ca, la) <- readCode tc a
@@ -317,12 +349,17 @@ readCode tc v = case v of
     dx <- readNf tc a x
     dy <- readNf tc a y
     Right (dapp (dv cId) [dlvl tc la, ca, dx, dy], la)
-  VSum st _ _ r -> do
+  VSum _ (_:_) _ _ _ -> Left "an indexed family: not translated yet"
+  VSum st _ _ _ r -> do
     let d = dataId st
     as <- dataArgs tc d r
     l <- dataLevel tc d r
     Right (dapp (dv (gname d)) as, l)
   VRec _ tel r -> telCode tc tel r
+  VSegT md fs -> do
+    as <- recArgs tc md fs
+    l <- recLevel tc md fs
+    Right (dapp (dv (gname (dataId (modId md)))) as, l)
   _ -> do
     (d, t) <- readNe tc v
     case whnfT tc t of
@@ -402,6 +439,10 @@ globalArgs tc i r = case M.lookup i (tcGlob tc) of
   Just info -> mapM arg (iParams info)
  where
   arg p = case p of
+    -- the element of a record, for its derived members
+    PSelf _ _ -> case lookupVal r "%self" of
+      w@(VInst m r') -> readNf tc (VSegT m [ (h, lookupDyn r' h) | h <- recordHeads m ]) w
+      w -> fst <$> readNe tc w
     PLv x -> Right (dlvl tc (lookupLvl r x))
     PTm x _ -> case lookupVal r x of
       VConst y _ | y == x -> Right (dv (lname x))
@@ -458,6 +499,135 @@ dataLevel tc d r = case M.lookup d (tcGlob tc) >>= iData of
     (VPi _ f, x : rest) -> go (capp f (lookupVal r x)) rest
     (VLPi f, x : rest) -> go (lcapp f (lookupLvl r x)) rest
     (t', _) -> Left ("the type of a data type: " ++ showT tc t')
+
+------------------------------------------------------------------------
+-- Records
+
+-- the fields of a record and their types (not its head parameters)
+recordFieldUnits :: Mod -> [(Name, Exp)]
+recordFieldUnits md = [ (x, a) | UPar _ x a <- modUnits md, x `notElem` recordHeads md ]
+
+-- the arguments of a record type R[ps]: the parameters of its segments, at
+-- the environment of the instance, and its head parameters, from the type
+recArgs :: TC -> Mod -> [(Name, Val)] -> T [DExp]
+recArgs tc md fs = case M.lookup rid (tcGlob tc) >>= iRec of
+  Nothing -> Left ("not a record translated: " ++ rid)
+  Just ri -> do
+    outer <- globalArgs tc rid (modEnv md)
+    hs <- heads (modEnv md) (rHeads ri)
+    Right (outer ++ hs)
+ where
+  rid = dataId (modId md)
+  heads _ [] = Right []
+  heads r (p : ps) = case p of
+    PLv x -> case lookup x fs of
+      Just (VLvl l) -> (dlvl tc l :) <$> heads (ELvl r x l) ps
+      _ -> Left ("the head level " ++ x ++ " of " ++ rid)
+    PTm x t -> case lookup x fs of
+      Just v -> do
+        d <- readNf tc (paramTypeAt r t) v
+        (d :) <$> heads (EVar r x v) ps
+      Nothing -> Left ("the head parameter " ++ x ++ " of " ++ rid)
+    PSelf _ _ -> Left "a record element as a head"
+
+-- the level of a record type at an instance: its level, with the level
+-- parameters of its segments and of its head as the instance gives them
+recLevel :: TC -> Mod -> [(Name, Val)] -> T Lvl
+recLevel tc md fs = case M.lookup rid (tcGlob tc) of
+  Just Info { iRec = Just ri, iParams = ps } ->
+    let outer = [ (x, lookupLvl (modEnv md) x) | PLv x <- ps ]
+        heads = [ (x, l) | PLv x <- rHeads ri, Just (VLvl l) <- [lookup x fs] ]
+    in Right (lsubst (\x -> maybe (lvar x) id (lookup x (heads ++ outer))) (rLvl ri))
+  _ -> Left ("not a record translated: " ++ rid)
+ where rid = dataId (modId md)
+
+-- record R (heads) { fields ; derived members }: the type R, its
+-- constructor R.mk, a selector for each field with its rule, and the
+-- derived members as constants taking the element
+recordDecl :: TC -> Id -> Mod -> Result -> (Glob, Result)
+recordDecl tc i md out = case decls of
+  Left m -> (tcGlob tc, out { rSkipped = (i, "record: " ++ m) : rSkipped out })
+  Right (js, glob, line, extra) ->
+    (glob, extra out { rJmts = reverse js ++ rJmts out, rDkgf = line : rDkgf out, rFull = rFull out + 1 })
+ where
+  hs = recordHeads md
+  decls = do
+    -- the head parameters, as the parameters of a segment
+    let tcH = fst (units tc [i] (headUnits md) (Result [] [] 0 [] []))
+        heads = drop (length (tcPars tc)) (tcPars tcH)
+        pnames = map fst (paramBinds tcH)
+        tcH' = tcH { tcNames = pnames ++ tcNames tcH }
+    -- the constructor: the fields as variables
+    (_, fields) <- conFields tcH' (filter (not . isHeadUnit) (modUnits md))
+    let l = foldr (lmax . (\(_, _, k) -> k)) lzero fields
+        self = dapp (dv (gname i)) (map dv pnames)
+        elT = dapp (dv cEl) [dlvl tcH l, self]
+        tyR = closeParams tcH (dapp (dv cU) [dlvl tcH l])
+        mk = cname i "mk"
+        tyMk = closeParams tcH (foldr (\(n, a, _) e -> dpi n a e) elT fields)
+        ri = RecInfo heads (recordFieldUnits md) l
+        glob = M.insert i (Info (tcPars tc) Nothing False (Just ri)) (tcGlob tc)
+        tcG = tcH' { tcGlob = glob }
+    -- the selectors: the element as a variable t, the earlier fields as
+    -- its projections
+        hv = [ case p of { PLv x -> (x, VLvl (lvar x)); PTm x _ -> (x, lookupVal (cxEnv (tcCx tcH)) x)
+                         ; PSelf x _ -> (x, VConst x []) } | p <- heads ]
+        selfTy = VSegT md hv
+        (tcT, tv, nt) = extend tcG "t" selfTy
+        env = selfEnv md hv tv
+        fnames = [ n | (n, _, _) <- fields ]
+        vars = map (D.PBVar . qid) (pnames ++ fnames)
+        lhsMk = pappl mk (map (D.PVar . qid) (pnames ++ fnames))
+    sels <- mapM (\((y, ta), n) -> do
+                    dt <- readType tcT (eval env ta)
+                    let sel = cname i y
+                        ty = closeParams tcH (dpi nt elT dt)
+                        rule = D.RRule vars (pappl sel (map (D.PVar . qid) pnames ++ [lhsMk])) (dv n)
+                    Right (sel, [D.JDef (qid sel) (D.MTExp ty) D.MENone, D.JRules [rule]]))
+                 (zip (recordFieldUnits md) fnames)
+    -- the derived members, each with the element as its last parameter
+    let tcD = tcT { tcPars = tcPars tcH ++ [PSelf nt selfTy] }
+        defs = [ u | u@(UDef{}) <- modUnits md ]
+        globD = foldl (\g (UDef j _ _ _) -> M.insert j (Info (tcPars tcD) Nothing False Nothing) g) glob defs
+        tcD' = tcD { tcGlob = globD }
+        derived = [ member tcD' env u | u <- defs ]
+        line = "#RECORD " ++ gname i ++ " " ++ mk ++ " " ++ unwords (map fst sels)
+        extra o = foldl (\o' (_, f) -> f o') o derived
+    Right ( [D.JStatic (qid (gname i)) tyR, D.JStatic (qid mk) tyMk] ++ concatMap snd sels
+            ++ concatMap fst derived
+          , globD, line, extra )
+  isHeadUnit u = case u of
+    ULvl x -> x `elem` hs
+    UPar _ x _ -> x `elem` hs
+    _ -> False
+  -- the fields as variables, with their types and levels; the derived
+  -- members and opens in between are entered (and unfolded where used)
+  conFields t [] = Right (t, [])
+  conFields t (u : us) = case u of
+    UPar _ y a -> do
+      let va = ev (tcCx t) a
+      (_, k) <- readCode t va
+      da <- readType t va
+      let (t', _, n) = extend t y va
+      (t'', rest) <- conFields t' us
+      Right (t'', (n, da, k) : rest)
+    UDef{} -> let (g, rest) = span isGroupUnit (u : us)
+              in conFields t { tcCx = enterGroup (tcCx t) g } rest
+    UInst{} -> conFields t { tcCx = (tcCx t) { cxEnv = mkGroup (cxEnv (tcCx t)) [u] } } us
+    UCstr cs -> conFields t { tcCx = addCs (tcCx t) (map (evalCs (cxEnv (tcCx t))) cs) } us
+    _ -> conFields t us
+  -- a derived member: a definition with the element as its last parameter
+  member t env u = case u of
+    UDef j _ a b ->
+      let ta = eval env a
+      in case readType t ta of
+        Left m -> ([], \o -> o { rSkipped = (j, "type: " ++ m) : rSkipped o })
+        Right dt ->
+          let ty = closeParams t dt
+          in case readNf t ta (eval env b) of
+            Right db -> ([D.JDef (qid (gname j)) (D.MTExp ty) (D.MEExp (closeLams t db))], \o -> o { rFull = rFull o + 1 })
+            Left m -> ([D.JStatic (qid (gname j)) ty], \o -> o { rAxioms = (j, m) : rAxioms o })
+    _ -> ([], id)
 
 ------------------------------------------------------------------------
 -- Types, in type position: Pi as Dedukti's own, otherwise El of a code
@@ -526,7 +696,7 @@ units tc path (u : us) out = case u of
                  Right t -> (out { rJmts = D.JStatic (qid (gname x)) (closeParams tc t) : rJmts out
                                  , rFull = rFull out + 1 }, True)
                  Left m -> (out { rSkipped = (i, m) : rSkipped out }, False)
-               glob' = if ok then M.insert x (Info [] Nothing True) (tcGlob tc) else tcGlob tc
+               glob' = if ok then M.insert x (Info [] Nothing True Nothing) (tcGlob tc) else tcGlob tc
            in units tcP { tcGlob = glob' } path us out'
          else units tc { tcCx = cx', tcPars = tcPars tc ++ [PTm x va], tcNames = lname x : tcNames tc } path us out
   ULock s -> units tc { tcCx = (tcCx tc) { cxLocks = Set.fromList s } } path us out
@@ -547,8 +717,8 @@ units tc path (u : us) out = case u of
       let cx = tcCx tc
           u' = UMod i x k mus
           cx1 = cx { cxEnv = mkGroup (cxEnv cx) [u'] }
-          out' = out { rSkipped = (i, "a record (record ...): not translated yet") : rSkipped out }
-      in units tc { tcCx = cx1 } path us out'
+          (glob', out') = recordDecl tc { tcCx = cx1 } i (lookupMod (cxEnv cx1) x) out
+      in units tc { tcCx = cx1, tcGlob = glob' } path us out'
   UInst _ _ _ ->
     units tc { tcCx = (tcCx tc) { cxEnv = mkGroup (cxEnv (tcCx tc)) [u] } } path us out
   UDef{} ->
@@ -557,7 +727,7 @@ units tc path (u : us) out = case u of
         (tc2, out') = foldl (\(t, o) d -> definition d (t, o)) (tc1, out) g
     in units tc2 path rest out'
  where
-  parName p = case p of { PTm x _ -> lname x; PLv x -> lname x }
+  parName p = case p of { PTm x _ -> lname x; PLv x -> lname x; PSelf n _ -> n }
 
 -- the type of a lifted constant: the parameters in scope, then t
 closeParams :: TC -> DExp -> DExp
@@ -569,10 +739,13 @@ paramBinds tc = go tc0 (tcPars tc)
  where
   -- the names of all the parameters are in scope in their types, so that
   -- no binder in a type captures a parameter
-  tc0 = tc { tcNames = [ lname x | p <- tcPars tc, let x = case p of { PTm y _ -> y; PLv y -> y } ] }
+  tc0 = tc { tcNames = [ case p of { PTm y _ -> lname y; PLv y -> lname y; PSelf n _ -> n } | p <- tcPars tc ] }
   go _ [] = []
   go t (p : ps) = case p of
     PLv x -> (lname x, dv cLvl) : go t ps
+    PSelf n a -> case readType t a of
+      Right da -> (n, da) : go t ps
+      Left m -> (n, dv ("{|untranslated parameter type: " ++ filter (/= '|') (take 80 m) ++ "|}")) : go t ps
     PTm x a -> case readType t a of
       Right da -> (lname x, da) : go t ps
       Left m -> (lname x, dv ("{|untranslated parameter type: " ++ filter (/= '|') (take 80 m) ++ "|}")) : go t ps
@@ -585,7 +758,7 @@ definition u (tc, out) = case u of
   UDef i _ a b ->
     let tcD = tc { tcNames = map fst (paramBinds tc) }
         ta = ev (tcCx tcD) a
-        info = Info (tcPars tc) (dataLams b a) False
+        info = Info (tcPars tc) (dataLams b a) False Nothing
         glob' = M.insert i info (tcGlob tc)
         tcG = tcD { tcGlob = glob' }
         out' = case readType tcG ta of
@@ -622,8 +795,13 @@ dataBody :: Exp -> Maybe [(Name, Tel)]
 dataBody e = case e of
   Lam _ b -> dataBody b
   LLam _ b -> dataBody b
-  Sum _ cs -> Just cs
+  Sum _ [] cs -> Just (plainCons cs)
   _ -> Nothing
+
+-- the constructors of a data type without indices: their fields (the target
+-- indices, which such a type has none of, left out)
+plainCons :: [(Name, Tel, [Exp])] -> [(Name, Tel)]
+plainCons cs = [(c, tel) | (c, tel, _) <- cs]
 
 -- a data type: the names of its lambdas and its type
 dataLams :: Exp -> Exp -> Maybe ([Name], Exp)
@@ -638,7 +816,7 @@ hasSplit :: Exp -> Bool
 hasSplit e = case e of
   Lam _ b -> hasSplit b
   LLam _ b -> hasSplit b
-  Split _ _ -> True
+  Split _ _ _ -> True
   _ -> False
 
 -- the constructors of a data type d of type t, body b
@@ -653,7 +831,9 @@ dataDecl tc d t b = go tc t (ev (tcCx tc) b) []
     (VLPi f, VLLam cl) -> do
       let (tc', l, n) = extendL tcx (lclosName cl)
       go tc' (lcapp f l) (lcapp cl l) (binds ++ [(n, dv cLvl)])
-    (VU _, s@(VSum _ _ cs r)) -> do
+    (VU _, VSum _ (_:_) _ _ _) -> Left "an indexed family: not translated yet"
+    (VU _, s@(VSum _ _ _ cs0 r)) -> do
+      let cs = plainCons cs0
       (self, l) <- readCode tcx s
       mapM (con tcx self l r binds) cs
     (t', _) -> Left ("data type of type " ++ showT tcx t')
@@ -694,9 +874,11 @@ splitRules tc f t b = do
         let (tc', l, n) = extendL tcx x
         walk tc' (vars ++ [n]) (args ++ [LArg (D.PVar (qid n)) (dv n)]) (lcapp g l) body
       t' -> Left ("level lambda at " ++ showT tcx t')
-    Split st bs -> case whnfT tcx ty of
+    Split st _ bs -> case whnfT tcx ty of
       VPi dom g -> case whnfT tcx dom of
-        VSum dst _ cs r -> do
+        VSum _ (_:_) _ _ _ -> Left "a split on an indexed family: not translated yet"
+        VSum dst _ _ cs0 r -> do
+          let cs = plainCons cs0
           let d = dataId dst
           as <- dataArgs tcx d r
           rss <- mapM (branch tcx vars args d as cs r g st) bs
@@ -730,7 +912,7 @@ splitRules tc f t b = do
       cxR <- recCx (tcCx tcF) st c tel r g fvs rs
       let k0 = cxK (tcCx tcF)
           tys = reverse (take (length rs) (cxTys cxR))
-      calls <- mapM (\(RecR j n _) -> recCall tcF prefix (fnames !! j) (fieldTypes tcF fvs tel r !! j) n) rs
+      calls <- mapM (\(RecR j n _ _) -> recCall tcF prefix (fnames !! j) (fieldTypes tcF fvs tel r !! j) n) rs
       let tcR = tcF { tcCx = cxR
                     , tcGens = foldl (\m (k, call, ty) -> M.insert k (call, snd ty) m)
                                      (tcGens tcF) (zip3 [k0 ..] calls tys) }

@@ -56,15 +56,28 @@ The encoding is in `prelude.dk`, printed at the head of the output:
   `M[args].f` is that constant applied to `args`. The `.dkgf` output has a
   line `#STRUCTURE M (params) members` for each segment. Local definitions
   (`where`) are unfolded where they are used.
+- **Records** (`record R (heads) { fields ; derived members }`, Unit's
+  doc/RECORDS.md): a constant `R : (params) (heads) -> U l`, a constructor
+  `R.mk` taking the fields, and for each field `x` a selector
+  `R.x : (params) (heads) -> (t : El l (R ..)) -> A`, in whose type the
+  earlier fields are their selectors at `t`, defined by the rule
+  `R.x .. (R.mk .. x1 .. xn) --> x`. A derived member is a definition taking
+  the element as its last parameter. `new R[..]` is `R.mk` applied to the
+  parameters and fields, `t.x` the selector applied to `t`. Records are
+  nominal and have no eta in Unit, so neither here. The `.dkgf` output has a
+  line `#RECORD R R.mk selectors` for each record, for Informath to read
+  the constructor as a structure definition.
 
 Names: a declaration keeps its qualified Unit name, quoted (`{|Prelude.sym|}`);
 a constructor is `{|D.c|}`.
 
 ## What is not translated yet
 
-- Records declared with `record` (`new`, segment types, derived members):
-  much of `core/` builds on them (`PCtx`, `PTy`, `Ob`), and everything
-  using them is left out for now.
+- Indexed inductive families (`data D (ps) : (is : Ixs) -> U l`), in Unit
+  since 5 November: their declarations and the splits on them become axioms.
+- Partially fixed record types `R[ps][x := e]` (RECORDS.md §4) are read as
+  `R[ps]`, which loses the fixed values: what uses them (`isEquiv A B f`)
+  does not type-check.
 - Level constraints (`constraint a <= l`) and constraint products are
   dropped; the plan is to encode `a <= l` by writing `l` as `lmax a l'`.
 - Conversion that Unit has and the encoding only partly has: eta for Sigma
