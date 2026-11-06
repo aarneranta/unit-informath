@@ -1,0 +1,27 @@
+{
+ "_about": "The proofs of the sample of scripts/proof_sample.py in the original text (unit/doc/gcddomain.tex), each fragment with the steps of the formal proof that it says (the numbers of Informath's proof text). The alignment is made by hand.",
+ "div-refl": {
+  "where": "Lemma 8.3 (1), p. 5",
+  "statement": [["(\\nm{div-refl}) ", []], ["$a\\mid a$", [3]], [", with quotient $1$.", [1, 2]]],
+  "proof": [["(The lemma's proof does not treat this item: $a = a\\cdot1$.)", [1, 2]]]
+ },
+ "div-of-zero": {
+  "where": "Lemma 8.3 (11), p. 5",
+  "statement": [["(\\nm{div-of-zero}) ", []], ["If $0\\mid b$", [1]], [" then $b=0$.", [4]]],
+  "proof": [["(11) ", []], ["$b = 0\\cdot q$", [2]], [" $= 0$.", [3, 4]]]
+ },
+ "div-trans": {
+  "where": "Lemma 8.3 (4), p. 5",
+  "statement": [["(\\nm{div-trans}) ", []], ["If $a\\mid b$", [1]], [" and $b\\mid c$", [2]], [" then $a\\mid c$.", [10]]],
+  "proof": [["(4) ", []], ["If $b = ah$", [4]], [" and $c = bk$", [3]], [" then $c = bk$", [3]], [" $= (ah)k$", [5]],
+            [" $= a(hk)$", [6, 7, 8, 9]], [", so the quotient is $hk$.", [10]]]
+ },
+ "euclid": {
+  "where": "Lemma 8.10 (Euclid), p. 7",
+  "statement": [["If $\\gcdd(a,b)\\mid1$", [1]], [" and $a\\mid bc$", [2]], [" then $a\\mid c$.", [10]]],
+  "proof": [["$a\\mid ca$", [3]], [" and $a\\mid cb$", [5]], [" ($cb = bc$)", [4]],
+            [", so $a\\mid c\\gcdd(a,b)$ by Lemma 8.9 (Lemma M) with $u=c$.", [6]],
+            [" And $c\\gcdd(a,b)\\mid c\\cdot1$", [8]], [" $= c$", [7, 9]], [" (\\nm{div-scale}).", [8]],
+            [" So $a\\mid c$.", [10]]]
+ }
+}

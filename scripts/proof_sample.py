@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A page of proofs of a Unit development: the Unit source, the step-by-step
-Unit and Dedukti terms, and Informath's proof text, linked by the numbers of
-the proof text.
+Unit and Dedukti terms, Informath's proof text, and the proof in the
+original informal text, linked by the numbers of the proof text.
 
     python3 scripts/proof_sample.py out/gcddomain.dk out/gcddomain.dkgf gcddomain-view.dkgf \\
         ../unit/sag/gcddomain out/proofs.html Theory.GcdDomain.Divisibility.div-refl ...
@@ -23,6 +23,12 @@ that Unit leaves implicit ({x y : A} in the declaration) and the parameters
 of the segments a constant is in are not shown, a projection is p.1, p.2, a
 pair (a, p).  Hovering over a row highlights it; a premiss's number links to
 its row.
+
+With -text=proof-sample.json, each proof also has its statement and proof in
+the original text (unit/doc/gcddomain.tex), in fragments, each with the
+steps it says: hovering over a fragment highlights its steps, and over a
+step the fragments that say it.  The alignment is made by hand.  The
+Dedukti column is hidden until its check box is ticked.
 """
 
 import html
@@ -263,10 +269,51 @@ table.steps tr:hover td,table.steps tr:target td{background:#fff4c2}
 td.num{text-align:right;color:#3a6ea5;font-weight:600;white-space:nowrap}
 td.code{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;white-space:pre-wrap;word-break:break-word}
 td.unit{background:#fbf8ef}
+.dk{display:none} body.show-dk .dk{display:table-cell}
+.orig{border-left:3px solid #3d8b37;background:#f3faf2;padding:.4rem .7rem;margin:.3rem 0;border-radius:0 6px 6px 0}
+.orig .where{color:#3d8b37;font-size:.8rem;margin-bottom:.2rem}
+.frag{border-radius:3px;cursor:default}
+.frag[data-steps]:hover,.frag.hl{background:#fff1a8}
+table.steps tr.hl td{background:#fff4c2}
+.toggle{font-size:.88rem;color:#555;margin:.5rem 0}
 td.just code{color:#6a4c93}
 a.ref{color:#3a6ea5;text-decoration:none;font-weight:600}
 details{margin-top:.5rem} summary{cursor:pointer;color:#3a6ea5;font-size:.85rem}
 .stmt{margin:.3rem 0}
+"""
+
+
+# the macros of gcddomain.tex that its fragments use
+TEXT_MACROS = {'gcdd': '\\operatorname{gcd}', 'cont': '\\mathrm{c}'}
+
+
+def orig_html(frags, anchor):
+    """Fragments of the original text, each with the steps it says."""
+    out = []
+    for t, steps in frags:
+        t = html.escape(t)
+        t = re.sub(r'\\nm\{(.*?)\}', r'<code>\1</code>', t)
+        attr = ' data-steps="%s"' % ' '.join(anchor(k) for k in steps) if steps else ''
+        out.append('<span class="frag"%s>%s</span>' % (attr, t))
+    return ''.join(out)
+
+
+SCRIPT = """
+document.addEventListener('DOMContentLoaded', function () {
+  var box = document.getElementById('show-dk');
+  box.addEventListener('change', function () { document.body.classList.toggle('show-dk', box.checked); });
+  function rowsOf(f) { return (f.dataset.steps || '').split(' ').filter(Boolean).map(function (i) { return document.getElementById(i); }); }
+  document.querySelectorAll('.frag[data-steps]').forEach(function (f) {
+    f.addEventListener('mouseenter', function () { rowsOf(f).forEach(function (r) { r && r.classList.add('hl'); }); });
+    f.addEventListener('mouseleave', function () { rowsOf(f).forEach(function (r) { r && r.classList.remove('hl'); }); });
+  });
+  document.querySelectorAll('table.steps tr[id]').forEach(function (r) {
+    var fs = Array.prototype.filter.call(document.querySelectorAll('.frag[data-steps]'), function (f) {
+      return f.dataset.steps.split(' ').indexOf(r.id) >= 0; });
+    r.addEventListener('mouseenter', function () { fs.forEach(function (f) { f.classList.add('hl'); }); });
+    r.addEventListener('mouseleave', function () { fs.forEach(function (f) { f.classList.remove('hl'); }); });
+  });
+});
 """
 
 
@@ -276,6 +323,10 @@ def main():
         sys.exit(__doc__)
     dk, dkgf, table, segdir, out = args[:5]
     names = args[5:]
+    texts = {}
+    for a in sys.argv[1:]:
+        if a.startswith('-text='):
+            texts = json.load(open(a[6:]))
     run = runinformath()
     tmp = tempfile.mkdtemp()
     # the view with the proofs, and the base of their rules and lemmas
@@ -305,6 +356,7 @@ def main():
     r3 = subprocess.run([run, '-to-latex-doc', '-force-symbolic', '-to-lang=Eng', '-add-symboltables=' + table, stmts],
                         capture_output=True, text=True)
     macros = macros_of(r3.stdout.split('\n'))
+    macros.update(TEXT_MACROS)
     # the types of the base, for the premisses of each rule
     types = {n: t for _, n, t, _ in iv.judgements(open(base).read()) if n}
     # Unit's names and segments
@@ -336,7 +388,12 @@ def main():
             'its other arguments, with the numbers of its premisses in place of their proofs, and '
             'indented by its depth in the proof. Hover over a row to highlight it; a number links to '
             'the row of its step. The texts are made with <code>RunInformath -proof-text '
-            '-proof-text-dedukti -force-symbolic</code>.</p>']
+            '-proof-text-dedukti -force-symbolic</code>.</p>'
+            '<p>Above each table, in green, the statement and proof in the original text '
+            '(Coquand, <i>Gauss\'s lemma and polynomial gcd domains</i>, unit/doc/gcddomain.tex), '
+            'cut in fragments: hovering over a fragment highlights the steps it says, and over a '
+            'step the fragments that say it. This alignment is made by hand.</p>'
+            '<div class="toggle"><label><input type="checkbox" id="show-dk"> show the Dedukti steps</label></div>']
     report = []
     for (kw, n, t, b), sec in zip(proofs, secs):
         q = long_of[n][2:-2] if n in long_of else n
@@ -363,6 +420,12 @@ def main():
         link = lambda s: re.sub(r'\[(\d+)\]', lambda m: '<a class="ref" href="#%s">%s</a>' % (anchor(int(m.group(1))), m.group(1)), s)
         body.append('<h2 id="%s">%s</h2>' % (pid, html.escape(q.split('.')[-1])))
         body.append('<div class="stmt">%s</div>' % html.escape(reading.get(n, '')))
+        orig = texts.get(q.split('.')[-1])
+        if orig:
+            body.append('<div class="lab">The original text</div><div class="orig"><div class="where">%s</div>'
+                        '<div><b>Statement.</b> %s</div><div><b>Proof.</b> %s</div></div>'
+                        % (html.escape(orig['where']), orig_html(orig['statement'], anchor),
+                           orig_html(orig['proof'], anchor)))
         body.append('<div class="lab">Unit source</div><pre class="unit">%s</pre>' % html.escape(src or '(not found)'))
         rows = {}
         for i, x in enumerate(hyps):
@@ -371,7 +434,7 @@ def main():
             uni = up.show(e, {k: v for k, v in prem.items()})
             uni = re.sub(r'(?<![\w.])(\d+)(?![\w])', lambda m: '[%s]' % m.group(1) if int(m.group(1)) in prem.values() else m.group(1), uni)
             rows[num] = ('', link(html.escape(uni)), link(html.escape(dk_step(e, prem))), depth)
-        tr = ['<table class="steps"><tr><th>#</th><th>Informath</th><th>by</th><th>Unit</th><th>Dedukti</th></tr>']
+        tr = ['<table class="steps"><tr><th>#</th><th>Informath</th><th>by</th><th>Unit</th><th class="dk">Dedukti</th></tr>']
         for k, row in enumerate(eng, 1):
             num, sent, just = (row + ['', '', ''])[:3]
             _, u, d, depth = rows.get(k, ('', '', '', 0))
@@ -379,7 +442,7 @@ def main():
             just = re.sub(r'(\d+)', lambda m: '<a class="ref" href="#%s">%s</a>' % (anchor(int(m.group(1))), m.group(1)),
                           text_html(just))
             tr.append('<tr id="%s"><td class="num">%d</td><td>%s</td><td class="just">%s</td>'
-                      '<td class="code unit">%s%s</td><td class="code">%s%s</td></tr>'
+                      '<td class="code unit">%s%s</td><td class="code dk">%s%s</td></tr>'
                       % (anchor(k), k, text_html(sent), just, ind, u, ind, d))
         tr.append('</table>')
         body.append('<div class="lab">Steps</div>' + '\n'.join(tr))
@@ -388,8 +451,8 @@ def main():
     page = ('<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<title>Unit proofs</title><script>window.MathJax={tex:{inlineMath:[["$","$"]],macros:%s}};</script>'
-            '<script async src="%s"></script><style>%s</style></head><body>\n%s\n</body></html>\n'
-            % (json.dumps(macros), MATHJAX, STYLE, '\n'.join(body)))
+            '<script async src="%s"></script><script>%s</script><style>%s</style></head><body>\n%s\n</body></html>\n'
+            % (json.dumps(macros), MATHJAX, SCRIPT, STYLE, '\n'.join(body)))
     open(out, 'w').write(page)
     print('\n'.join(report))
     print('-> %s' % out)
