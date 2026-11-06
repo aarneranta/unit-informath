@@ -69,3 +69,7 @@ Elimination_Over_Bounded : "#4 is bounded by #3"
 pair : $(#3, #4)$
 fst : $\pi_1(#3)$
 snd : $\pi_2(#3)$
+
+(; the binary operations of structures (the view's Oper fields) ;)
+Oper : "binary operation on #1"
+appOper : $#3 #2 #4$

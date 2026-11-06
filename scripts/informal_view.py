@@ -446,6 +446,7 @@ class View:
             while isinstance(ty, Pi):
                 fields.append((ty.name, ty.typ))
                 ty = ty.body
+            fields = opers(fields)
             s = Var('Structure')
             for x, a in reversed(fields):
                 s = Pi(x, a, s)
@@ -487,6 +488,54 @@ class View:
 # the names unit2dk primes, as the prelude's (u'), which the view does not have
 PRELUDE = {'Lvl', 'lz', 'ls', 'lmax', 'U', 'El', 'u', 'lift', 'pi', 'sigma', 'pair', 'fst', 'snd',
            'id', 'refl', 'J', 'one', 'tt'}
+
+
+# the symbols of binary operations, for the fields of structures named so
+OPER_SYMBOLS = {'add': '+', 'mul': '\\cdot', 'sub': '-', 'addQ': '+', 'mulQ': '\\cdot', 'addP': '+'}
+
+
+def subst(e, sub):
+    """e with the variables of sub replaced (sub gives functions of the
+    arguments: a binary operation applied to two arguments)."""
+    if isinstance(e, Var):
+        return e
+    if isinstance(e, App):
+        h, args = spine(e)
+        if isinstance(h, Var) and h.name in sub and len(args) == 2:
+            return sub[h.name](subst(args[0], sub), subst(args[1], sub))
+        return App(subst(e.fun, sub), subst(e.arg, sub))
+    inner = {k: v for k, v in sub.items() if k != e.name}
+    return type(e)(e.name, subst(e.typ, sub) if e.typ is not None else None, subst(e.body, inner))
+
+
+def opers(fields):
+    """The fields of a structure that are binary operations on a set
+    (x : Elem R) -> (y : Elem R) -> Elem R: of type Oper R, named by their
+    symbol (add as +) and applied with appOper in the later fields, as in
+    Informath's test/algebra.dk, so that a ring's laws read x + y."""
+    out, sub = [], {}
+    for x, a in fields:
+        a = subst(a, sub)
+        car = binop(a)
+        if car is not None and x in OPER_SYMBOLS:
+            sym = '{|%s|}' % OPER_SYMBOLS[x]
+            out.append((sym, App(Var('Oper'), car)))
+            sub[x] = (lambda c, s: lambda u, v: apps(Var('appOper'), [c, Var(s), u, v]))(car, sym)
+        else:
+            out.append((x, a))
+    return out
+
+
+def binop(a):
+    """R if a is Elem R -> Elem R -> Elem R."""
+    def elem(t):
+        h, args = spine(t)
+        return args[0] if isinstance(h, Var) and h.name == 'Elem' and len(args) == 1 else None
+    if isinstance(a, Pi) and isinstance(a.body, Pi):
+        r1, r2, r3 = elem(a.typ), elem(a.body.typ), elem(a.body.body)
+        if r1 is not None and all(r is not None and show(r) == show(r1) for r in (r2, r3)):
+            return r1
+    return None
 
 
 def short_names(names):
