@@ -27,8 +27,10 @@ its row.
 With -text=proof-sample.json, each proof also has its statement and proof in
 the original text (unit/doc/gcddomain.tex), in fragments, each with the
 steps it says: hovering over a fragment highlights its steps, and over a
-step the fragments that say it.  The alignment is made by hand.  The
-Dedukti column is hidden until its check box is ticked.
+step the fragments that say it.  The alignment is made by hand.  With
+-text-auto=gcddomain.tex instead, the text and its alignment are found by
+scripts/align.py (and written to <out>-alignment.json).  The Dedukti column
+is hidden until its check box is ticked.
 """
 
 import html
@@ -46,6 +48,10 @@ iv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(iv)
 Var, App, Lam, Pi = iv.Var, iv.App, iv.Lam, iv.Pi
 ROOT = os.path.dirname(HERE)
+spec2 = importlib.util.spec_from_file_location('align', os.path.join(HERE, 'align.py'))
+align = importlib.util.module_from_spec(spec2)
+spec2.loader.exec_module(align)
+align.iv = iv          # one module of terms, for isinstance
 MATHJAX = 'https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-chtml-full.js'
 
 
@@ -317,16 +323,33 @@ document.addEventListener('DOMContentLoaded', function () {
 """
 
 
+def tex_numbers(tex):
+    """label -> (number, page), from compiling a copy of the text."""
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, 'text.tex')
+    open(f, 'w').write(open(tex).read())
+    subprocess.run(['pdflatex', '-interaction=nonstopmode', 'text.tex'], cwd=d, capture_output=True)
+    out = {}
+    aux = os.path.join(d, 'text.aux')
+    if os.path.exists(aux):
+        for m in re.finditer(r'\\newlabel\{([^}]*)\}\{\{([^}]*)\}\{([^}]*)\}', open(aux).read()):
+            out[m.group(1)] = (m.group(2), m.group(3))
+    return out
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     if len(args) < 6:
         sys.exit(__doc__)
     dk, dkgf, table, segdir, out = args[:5]
     names = args[5:]
-    texts = {}
+    texts, tex = {}, None
     for a in sys.argv[1:]:
         if a.startswith('-text='):
             texts = json.load(open(a[6:]))
+        if a.startswith('-text-auto='):
+            tex = a[11:]
+    numbers = tex_numbers(tex) if tex else {}
     run = runinformath()
     tmp = tempfile.mkdtemp()
     # the view with the proofs, and the base of their rules and lemmas
@@ -394,7 +417,7 @@ def main():
             'cut in fragments: hovering over a fragment highlights the steps it says, and over a '
             'step the fragments that say it. This alignment is made by hand.</p>'
             '<div class="toggle"><label><input type="checkbox" id="show-dk"> show the Dedukti steps</label></div>']
-    report = []
+    report, aligned = [], {}
     for (kw, n, t, b), sec in zip(proofs, secs):
         q = long_of[n][2:-2] if n in long_of else n
         src, _ = unit_decl(segdir, q)
@@ -421,6 +444,31 @@ def main():
         body.append('<h2 id="%s">%s</h2>' % (pid, html.escape(q.split('.')[-1])))
         body.append('<div class="stmt">%s</div>' % html.escape(reading.get(n, '')))
         orig = texts.get(q.split('.')[-1])
+        if tex:
+            found = align.find_text(open(tex).read(), q.split('.')[-1], numbers)
+            if found:
+                where, stm, prf = found
+                # the steps: their conclusions (the Dedukti lines), rules and data arguments
+                concl = {}
+                for k, row in enumerate(dkt, 1):
+                    m = re.match(r'\\verb#(?:[^#:]* : )?(.*)#$', row[1].replace('\\hspace*{1.5em}', ''))
+                    try:
+                        concl[k] = align.norm(iv.Parser(iv.tokens(m.group(1))).term()) if m else None
+                    except (SyntaxError, IndexError):
+                        concl[k] = None
+                rule = {num: (iv.spine(e)[0].name if isinstance(iv.spine(e)[0], Var) else None)
+                        for num, e, _, _ in st.steps}
+                data = {num: [align.norm(a) for k2, a in enumerate(iv.spine(e)[1]) if k2 not in prem]
+                        for num, e, _, prem in st.steps}
+                steps = {k: (concl.get(k), rule.get(k), data.get(k, [])) for k in range(1, len(dkt) + 1)}
+                vars_ = set()
+                bb2 = b
+                while isinstance(bb2, Lam):
+                    vars_.add(bb2.name)
+                    bb2 = bb2.body
+                orig = {'where': where, 'statement': align.align(stm, steps, vars_),
+                        'proof': align.align(prf, steps, vars_) if prf else [['(no proof in the text)', []]]}
+                aligned[q.split('.')[-1]] = orig
         if orig:
             body.append('<div class="lab">The original text</div><div class="orig"><div class="where">%s</div>'
                         '<div><b>Statement.</b> %s</div><div><b>Proof.</b> %s</div></div>'
@@ -455,6 +503,9 @@ def main():
             % (json.dumps(macros), MATHJAX, SCRIPT, STYLE, '\n'.join(body)))
     open(out, 'w').write(page)
     print('\n'.join(report))
+    if tex:
+        # the alignment made, for comparing or correcting
+        json.dump(aligned, open(out[:-5] + '-alignment.json', 'w'), indent=1, ensure_ascii=False)
     print('-> %s' % out)
 
 

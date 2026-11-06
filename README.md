@@ -126,7 +126,20 @@ notation and in Dedukti, its premisses as links to their rows:
 
     P=Theory.GcdDomain.Divisibility
     python3 scripts/proof_sample.py out/gcddomain.dk out/gcddomain.dkgf gcddomain-view.dkgf \
-      ../unit/sag/gcddomain out/proofs.html $P.div-refl $P.div-of-zero $P.div-trans Theory.GcdDomain.Gcd.euclid
+      ../unit/sag/gcddomain out/proofs.html $P.div-refl $P.div-of-zero $P.div-trans Theory.GcdDomain.Gcd.euclid \
+      -text-auto=../unit/doc/gcddomain.tex
+
+With `-text-auto`, each proof also has its statement and proof in the
+original text, found by its `\nm{name}` (a lemma named after it, or an item
+of a lemma's list and the paragraph of the proof with its number), cut into
+fragments at its formulas and aligned with the steps by `scripts/align.py`:
+a fragment links to the steps whose conclusions its formulas state (chains
+c = bk = (ah)k cut at their relations, a witness pi_1(h) read as h, a letter
+that is not a variable of the theorem matching any term), to the steps that
+have its lone term as an argument, and to the steps that apply a lemma it
+names. The alignment is written to `out/proofs-alignment.json`;
+`proof-sample.json` is the same alignment made by hand (`-text=`), for
+comparison.
 
 For proofs, the view reads a pair at a sigma of a proposition as existsI (its
 projections as fst, snd), and J at a motive that does not use the path, as
