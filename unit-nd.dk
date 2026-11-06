@@ -1,0 +1,30 @@
+(; The rules of the proofs of the informal view (scripts/informal_view.py),
+   for RunInformath -proof-text: the types from which it reads the premisses
+   and conclusions of each step.
+
+   Unit's sigma of a proposition is read as exists: a pair proving it is
+   existsI, its first projection the witness (fst), its second projection
+   the proof that the witness has the property (snd).  A sigma of two
+   propositions, not dependent, is and.  J at a motive that does not use the
+   path is transport (or Ring_trans, which the program declares itself). ;)
+
+Id : (A : Set) -> Elem A -> Elem A -> Prop.
+
+refl : (A : Set) -> (x : Elem A) -> Proof (Id A x x).
+
+transport : (A : Set) -> (P : (Elem A -> Prop)) -> (x : Elem A) -> (y : Elem A) ->
+  (p : Proof (Id A x y)) -> (d : Proof (P x)) -> Proof (P y).
+
+existsI : (A : Set) -> (B : ((x : Elem A) -> Prop)) ->
+  (a : Elem A) -> (b : Proof (B a)) -> Proof (exists A (x => B x)).
+
+fst : (A : Set) -> (B : ((x : Elem A) -> Prop)) -> (p : Proof (exists A (x => B x))) -> Elem A.
+
+snd : (A : Set) -> (B : ((x : Elem A) -> Prop)) -> (p : Proof (exists A (x => B x))) ->
+  Proof (B (fst A B p)).
+
+andI : (A : Prop) -> (B : Prop) -> (a : Proof A) -> (b : Proof B) -> Proof (and A B).
+
+andEl : (A : Prop) -> (B : Prop) -> (c : Proof (and A B)) -> Proof A.
+
+andEr : (A : Prop) -> (B : Prop) -> (c : Proof (and A B)) -> Proof B.

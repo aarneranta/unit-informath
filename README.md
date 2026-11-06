@@ -118,6 +118,20 @@ without them, as an informal text says them once:
 
 (635 of 636 declarations read, 57 sections, 50 pages.)
 
+`scripts/proof_sample.py` makes an HTML page of some proofs: for each, the
+Unit source and a table of its steps, numbered as Informath's proof text
+(`-proof-text -proof-text-dedukti -force-symbolic`, with the rules of
+`unit-nd.dk`) numbers its lines, each step in Informath's words, in Unit's
+notation and in Dedukti, its premisses as links to their rows:
+
+    P=Theory.GcdDomain.Divisibility
+    python3 scripts/proof_sample.py out/gcddomain.dk out/gcddomain.dkgf gcddomain-view.dkgf \
+      ../unit/sag/gcddomain out/proofs.html $P.div-refl $P.div-of-zero $P.div-trans Theory.GcdDomain.Gcd.euclid
+
+For proofs, the view reads a pair at a sigma of a proposition as existsI (its
+projections as fst, snd), and J at a motive that does not use the path, as
+the steps of calc are, as Ring_trans or transport.
+
 All 626 declarations of the view get a reading (about 15 s, 60 pages of
 LaTeX). For instance div-trans: "Let $A$ be a commutative ring. Let $a$,
 $b$ and $c$ be elements of $R$ such that $a$ divides $b$ and $b$ divides

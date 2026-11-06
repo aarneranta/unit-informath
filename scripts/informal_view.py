@@ -242,6 +242,7 @@ class View:
         # the variants of records with fixed fields, and their coercions
         self.variants = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\[.*\]\|\}$', n)}
         self.ups = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\]\.up\|\}$', n)}
+        self.with_selectors = False
         self.arity = {}     # constant -> the number of its arguments that stay
         for _, n, t, _ in decls:
             if n:
@@ -293,6 +294,18 @@ class View:
             # the encoding's own constants
             if name == 'lift':
                 return self.term(args[-1], env) if args else h
+            # J at a motive that does not use the path: transitivity (the
+            # steps of calc), or else transport along an equation
+            if name == 'J' and len(args) >= 8 and isinstance(args[4], Lam) and isinstance(args[4].body, Lam):
+                r = self.j_rule(args, env)
+                if r is not None:
+                    return r
+            # a pair, or its projections, at a sigma of a proposition: the
+            # rules of exists (or of and), whose predicate is a proposition
+            if name in ('pair', 'fst', 'snd') and len(args) >= 5 and isinstance(args[3], Lam):
+                r = self.exists_rule(name, args[2], args[3], args[4:], env)
+                if r is not None:
+                    return r
             if name in ('U', 'u'):
                 return Var('Set')
             if name in self.ups:
@@ -325,6 +338,55 @@ class View:
                 return apps(Var(CODES.get(name, name)), args[self.levels(name):])
             return apps(h, args)
         return apps(self.term(h, env), [self.term(a, env) for a in args])
+
+    def j_rule(self, args, env):
+        """J l A x m (z => q => C) d y p, C not using q: if C is Id B c z,
+        Ring_trans B c x y d p (from c = x and x = y, c = y); else
+        transport A (z => C) x y p d."""
+        _, a, x, _, mot, d, y, p = args[:8]
+        z, q, code = mot.name, mot.body.name, mot.body.body
+        if free(code, q):
+            return None
+        h, cargs = spine(code)
+        A, X, Y, P, D = (self.term(t, env) for t in (a, x, y, p, d))
+        if isinstance(h, Var) and h.name == 'id' and len(cargs) == 4 and \
+                isinstance(cargs[3], Var) and cargs[3].name == z and not free(cargs[2], z):
+            return apps(Var('Ring_trans'), [self.term(cargs[1], env), self.term(cargs[2], env), X, Y, D, P])
+        c = self.prop(code, dict(env, **{z: []}))
+        if c is None:
+            return None
+        return apps(Var('transport'), [A, Lam(z, None, c), X, Y, P, D])
+
+    def exists_rule(self, name, a, lam, rest, env):
+        """pair A (x => B) w p as existsI A (x => B') w p (B' B as a
+        proposition), fst and snd likewise; at a non-dependent sigma of two
+        propositions, andI, andEl, andEr; None if B is not a proposition."""
+        q = self.prop(lam.body, dict(env, **{lam.name: []}))
+        if q is None:
+            return None
+        rest = [self.term(r, env) for r in rest]
+        p = self.prop(a, env)
+        if p is not None and not free(lam.body, lam.name):
+            rule = {'pair': 'andI', 'fst': 'andEl', 'snd': 'andEr'}[name]
+            return apps(Var(rule), [p, q] + rest)
+        rule = {'pair': 'existsI', 'fst': 'fst', 'snd': 'snd'}[name]
+        return apps(Var(rule), [self.term(a, env), Lam(lam.name, None, q)] + rest)
+
+    def proof(self, n, t, b):
+        """A theorem with its proof: the definiens in the view's dialect."""
+        ty = self.type_(t, {})
+        body, env, names, tt = b, {}, [], t
+        while isinstance(body, Lam) and isinstance(tt, Pi):
+            if self.goes(tt.name, tt.typ):
+                env[body.name] = None
+            else:
+                names.append(body.name)
+                env[body.name] = self.dropped(tt.typ)
+            body, tt = body.body, tt.body
+        d = self.term(body, env)
+        for x in reversed(names):
+            d = Lam(x, None, d)
+        return 'def %s : %s :=\n  %s.' % (n, show(ty), show(d))
 
     def levels(self, c):
         """The level arguments of the prelude's constants (they are not in self.drop)."""
@@ -436,6 +498,10 @@ class View:
         return out
 
     def declaration(self, kw, n, t, b, strip=()):
+        # the selectors are notation, but a base of proofs needs their types
+        # (the laws of a ring are the steps of its proofs)
+        if n in self.sels and self.with_selectors:
+            return '%s : %s.' % (n, show(self.type_(t, {})))
         if n in self.sels or n in self.variants or n in self.ups or n in self.structs:
             return None
         if n in self.cons:
@@ -580,7 +646,11 @@ def main():
     text = text[text.index('(; the program ;)'):] if '(; the program ;)' in text else text
     decls = judgements(text)
     view = View(decls, records(args[1]))
-    out = []
+    # -proofs=q1,q2,..: these theorems (qualified names) with their proofs,
+    # after the declarations, for RunInformath -proof-text
+    proofs = {'{|%s|}' % q for a in sys.argv[1:] if a.startswith('-proofs=') for q in a[8:].split(',')}
+    view.with_selectors = bool(proofs)
+    out, proof_out = [], []
     for kw, n, t, b in decls:
         if n is None or kw == 'other':
             continue
@@ -593,6 +663,10 @@ def main():
             d = '(; %s: not viewed (%s) ;)' % (n, e)
         if d and keep:
             out.append(d)
+        if n in proofs and b is not None:
+            proof_out.append(view.proof(n, t, b))
+    if proofs:
+        out = ['(; PROOFS ;)'] + proof_out if '-only-proofs' in sys.argv else out + ['(; PROOFS ;)'] + proof_out
     body = '\n\n'.join(out)
     # shorter names: the qualified names of the program's constants
     consts = sorted({n for _, n, _, _ in decls if n and n.startswith('{|')} | set(view.recs))
