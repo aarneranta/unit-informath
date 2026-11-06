@@ -108,6 +108,16 @@ theorems are their statements. `gcddomain-view.dkgf` is the symbol table:
 
     RunInformath -add-symboltables=gcddomain-view.dkgf -to-latex-doc -to-lang=Eng out/gcddomain-view.dk > out/gcddomain-informal.tex
 
+`scripts/informal_doc.py` makes a LaTeX document of it with one section per
+segment (the #STRUCTURE lines of the .dkgf): a section first says its own
+parameters ("In this section: Let $A$ be a commutative ring. Assume that
+...", Informath's reading of them as hypotheses), and its members are read
+without them, as an informal text says them once:
+
+    python3 scripts/informal_doc.py out/gcddomain.dk out/gcddomain.dkgf gcddomain-view.dkgf out/gcddomain-doc.tex
+
+(635 of 636 declarations read, 57 sections, 50 pages.)
+
 All 626 declarations of the view get a reading (about 15 s, 60 pages of
 LaTeX). For instance div-trans: "Let $A$ be a commutative ring. Let $a$,
 $b$ and $c$ be elements of $R$ such that $a$ divides $b$ and $b$ divides

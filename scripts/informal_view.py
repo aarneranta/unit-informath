@@ -416,13 +416,32 @@ class View:
 
     # -- declarations
 
-    def declaration(self, kw, n, t, b):
+    def strip(self, ty, names):
+        """The type without its leading binders named in names (the
+        parameters of the sections it is in, said once at the section), and
+        how many went; a name not there (a level) is passed over."""
+        names, k = list(names), 0
+        while isinstance(ty, Pi) and names:
+            if ty.name == names[0]:
+                ty, k = ty.body, k + 1
+            names = names[1:]
+        return ty, k
+
+    def binders(self, t):
+        """The binders of a declaration's type, viewed: (name, type)."""
+        ty, out = self.type_(t, {}), []
+        while isinstance(ty, Pi):
+            out.append((ty.name, ty.typ))
+            ty = ty.body
+        return out
+
+    def declaration(self, kw, n, t, b, strip=()):
         if n in self.sels or n in self.variants or n in self.ups or n in self.structs:
             return None
         if n in self.cons:
             # a record: its constructor's fields as a structure
             r = self.cons[n]
-            ty = self.type_(t, {})
+            ty, _ = self.strip(self.type_(t, {}), strip)
             fields = []
             while isinstance(ty, Pi):
                 fields.append((ty.name, ty.typ))
@@ -431,7 +450,7 @@ class View:
             for x, a in reversed(fields):
                 s = Pi(x, a, s)
             return '%s : %s.' % (r, show(s))
-        ty = self.type_(t, {})
+        ty, stripped = self.strip(self.type_(t, {}), strip)
         # the type's result: a type or a proposition gets its definiens
         res = ty
         while isinstance(res, Pi):
@@ -454,7 +473,7 @@ class View:
                 d = p
             else:
                 d = self.term(body, env)
-            for x in reversed(names):
+            for x in reversed(names[stripped:]):
                 d = Lam(x, None, d)
             return 'def %s : %s :=\n  %s.' % (n, show(ty), show(d))
         return '%s : %s.' % (n, show(ty))

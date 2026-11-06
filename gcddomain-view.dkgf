@@ -64,3 +64,8 @@ PolyBase_Over_coef : ${#3}_{#4}$
 Content_Over_Prim : "#3 is primitive"
 Common : "#3 is a common divisor of the coefficients of #4"
 Elimination_Over_Bounded : "#4 is bounded by #3"
+
+(; pairs (Sigma types), whose type arguments a formula leaves out ;)
+pair : $(#3, #4)$
+fst : $\pi_1(#3)$
+snd : $\pi_2(#3)$
