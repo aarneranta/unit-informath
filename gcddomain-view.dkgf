@@ -1,0 +1,28 @@
+(; The symbol table of the informal view of sag/gcddomain
+   (scripts/informal_view.py), for RunInformath.  The record fields take
+   the record element as their first argument, which the forms leave out,
+   as the informal text does: "a + b" for add A a b. ;)
+
+(; equality of Unit's identity types ;)
+Id : "#2 is equal to #3" | $#2 = #3$
+
+(; commutative rings: the record CRing and its fields ;)
+CRing : "commutative ring"
+R : $R$
+z : $0$
+o : $1$
+add : $#2 + #3$
+mul : $#2 #3$
+neg : $- #2$
+
+(; logic and propositions of the foundations ;)
+Ring_Empty : $\emptyset$
+Not : $\neg #1$
+isProp : "#1 is a proposition"
+isSet : "#1 is a set"
+
+(; divisibility and gcd domains ;)
+Div : "#2 divides #3" | $#2 \mid #3$
+GcdOf : "#2 and #3 have a greatest common divisor"
+GcdDomain : "gcd domain"
+Gcd_gcd : $\gcd(#3, #4)$

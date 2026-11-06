@@ -89,6 +89,27 @@ unit/doc/gcddomain.tex) translates all its 612 declarations; dk accepts all
 but one (689 declarations and 220 rule sets, `FunExtUA.FE.totC` demoted,
 see below).
 
+## Informalization: the informal view
+
+unit2dk's Dedukti is checkable, not readable: universe levels, codes a la
+Tarski, lifts and the foundations' parameters are everywhere.
+`scripts/informal_view.py` rewrites it into Informath's dialect (Set, Elem,
+Proof, forall, exists, ...), for reading only: levels, lifts and the
+parameters `univ`, `images`, `surjections` go; `El` of a code is a function
+type, an equation, a proposition (`Proof P`, for codes that are identity
+types, `Empty`, `Not`, sums of propositions, Pi and Sigma of propositions,
+and constants defined as such) or a set of elements (`Elem A`); a record is a
+structure (its constructor), its selectors and variants vanish into
+notation; definitions of types and propositions keep their definiens,
+theorems are their statements. `gcddomain-view.dkgf` is the symbol table:
+
+    python3 scripts/informal_view.py out/gcddomain.dk out/gcddomain.dkgf > out/gcddomain-view.dk
+    RunInformath -add-symboltables=gcddomain-view.dkgf -to-lang=Eng out/gcddomain-view.dk
+
+For instance div-trans: "Let $A$ be a commutative ring. Let $a$, $b$ and $c$
+be elements of $R$ such that $a$ divides $b$ and $b$ divides $c$. Then $a$
+divides $c$."
+
 ## What is not translated yet
 
 - Indexed inductive families (`data D (ps) : (is : Ixs) -> U l`), in Unit
