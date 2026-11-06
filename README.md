@@ -81,6 +81,14 @@ The encoding is in `prelude.dk`, printed at the head of the output:
 Names: a declaration keeps its qualified Unit name, quoted (`{|Prelude.sym|}`);
 a constructor is `{|D.c|}`.
 
+## sag/gcddomain
+
+`unit2dk ../unit/sag/gcddomain/All.seg` (Gauss's lemma and "A gcd domain =>
+A[X] gcd domain", Coquand's reading example with its informal text
+unit/doc/gcddomain.tex) translates all its 612 declarations; dk accepts all
+but one (689 declarations and 220 rule sets, `FunExtUA.FE.totC` demoted,
+see below).
+
 ## What is not translated yet
 
 - Indexed inductive families (`data D (ps) : (is : Ixs) -> U l`), in Unit
@@ -88,6 +96,9 @@ a constructor is `{|D.c|}`.
 - Level constraints (`constraint a <= l`) and constraint products are
   dropped; the plan is to encode `a <= l` by writing `l` as `lmax a l'`.
 - Conversion that Unit has and the encoding only partly has: eta for Sigma
-  on neutral terms (Dedukti has only the rule `pair (fst p) (snd p) --> p`).
+  on neutral terms (Dedukti has only the rule `pair (fst p) (snd p) --> p`,
+  and its matching does not see `pair (\x. fst p x) (\x. snd p x)`, so
+  `FunExtUA.FE.totC` in sag/gcddomain does not type-check). The translator
+  eta-contracts the lambdas it reads back (`\x. f x` as `f`).
 - `dk` does not check that a lift goes upwards (`lift l m : U l -> U m`):
   the translator emits only the lifts Unit's own check justifies.

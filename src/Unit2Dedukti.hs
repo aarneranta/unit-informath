@@ -96,7 +96,9 @@ lname x0
 -- a parameter of a lifted constant: a term or a level of its segments, or
 -- (for the derived members of a record) the element of the record, with
 -- its Dedukti name and its type
-data Param = PTm Name Val | PLv Name | PSelf String Val
+-- (a term parameter also with its type as written, which an instance
+-- evaluates in its own environment)
+data Param = PTm Name Val Exp | PLv Name | PSelf String Val
 
 data Info = Info
   { iParams :: [Param]                -- the parameters of its segments, outermost first
@@ -195,7 +197,7 @@ readNf tc t v = case v of
       da <- readType tc a
       let (tc', x, n) = extend tc (closName f) a
       b <- readNf tc' (capp g x) (capp f x)
-      Right (dlamT n da b)
+      Right (etaContract n (dlamT n da b))
     t' -> Left ("a function at the type " ++ showT tc t')
   VLLam f -> case whnfT tc t of
     VLPi g -> do
@@ -251,6 +253,34 @@ readNf tc t v = case v of
       (VU m, VU l) -> Right (lift tc l m d)
       (VSegT md fs, _) | Just (VSegT _ fs') <- whnfSafe tc t' -> coerceRec tc md fs fs' d
       _ -> Right d
+
+-- \x. f x as f, when x is not free in f: the same up to eta, which dk
+-- checks with, but rewriting matches only the contracted form (the
+-- surjective pairing of a function pair (\x. fst w x) (\x. snd w x))
+etaContract :: String -> DExp -> DExp
+etaContract n e = case e of
+  D.EAbs _ (D.EApp f (D.EIdent (D.QIdent y))) | y == n, not (freeIn n f) -> f
+  _ -> e
+
+-- whether a name occurs free in a term
+freeIn :: String -> DExp -> Bool
+freeIn n e = case e of
+  D.EIdent (D.QIdent y) -> y == n
+  D.EApp f a -> freeIn n f || freeIn n a
+  D.EAbs b body -> bindIn b || (not (binds b) && freeIn n body)
+  D.EFun h body -> hypoIn h || (not (hbinds h) && freeIn n body)
+  _ -> True   -- anything else: assumed to mention it
+ where
+  binds, bindIn :: D.Bind -> Bool
+  hbinds, hypoIn :: D.Hypo -> Bool
+  binds b = case b of { D.BVar (D.QIdent y) -> y == n; D.BTyped (D.QIdent y) _ -> y == n; D.BLet (D.QIdent y) _ _ -> y == n }
+  bindIn b = case b of { D.BTyped _ a -> freeIn n a; D.BLet _ a c -> freeIn n a || freeIn n c; _ -> False }
+  hbinds h = case h of { D.HVarExp (D.QIdent y) _ -> y == n; D.HParVarExp (D.QIdent y) _ -> y == n; _ -> False }
+  hypoIn h = case h of
+    D.HExp a -> freeIn n a
+    D.HVarExp _ a -> freeIn n a
+    D.HParVarExp _ a -> freeIn n a
+    _ -> True
 
 isTypeVal :: Val -> Bool
 isTypeVal v = case v of
@@ -479,7 +509,7 @@ globalArgs tc i r = case M.lookup i (tcGlob tc) of
           Just (VSegT md fs) -> coerceRec tc md [ (h, v) | (h, v) <- fs, h `elem` recordHeads md ] fs d
           _ -> Right d
     PLv x -> Right (dlvl tc (lookupLvl r x))
-    PTm x _ -> case lookupVal r x of
+    PTm x _ _ -> case lookupVal r x of
       VConst y _ | y == x -> Right (dv (lname x))
       w -> do
         -- the type of the parameter at this instance; a type that cannot be
@@ -487,12 +517,10 @@ globalArgs tc i r = case M.lookup i (tcGlob tc) of
         -- not see by its id): the argument read as a neutral term
         t <- paramType x
         readArgAt tc t w
-  paramType x = case [ t | PTm y t0 <- iParams (tcGlob tc M.! i), y == x, let t = t0 ] of
-    (t : _) -> Right (reEval t)
+  -- the parameter's type as written, evaluated at the instance
+  paramType x = case [ a | PTm y _ a <- iParams (tcGlob tc M.! i), y == x ] of
+    (a : _) -> Right (eval r a)
     [] -> Left ("no parameter " ++ x)
-  -- the parameter's type, evaluated where it was declared, now at the
-  -- instance: re-evaluated in r
-  reEval t = t `seq` paramTypeAt r t
 
 -- an argument at the type of its parameter at an instance; a type that
 -- cannot be evaluated there (a record type, whose module the instance does
@@ -502,12 +530,6 @@ readArgAt tc t w = case whnfSafe tc t of
   Just _ -> readNf tc t w
   Nothing -> fst <$> readNe tc w
 
--- the type of a parameter at an instance environment: its type was
--- evaluated in the segment's own context, where the earlier parameters are
--- rigid; at an instance they are bound in r, so the type is read back and
--- evaluated in r
-paramTypeAt :: Env -> Val -> Val
-paramTypeAt r t = eval r (rb False mempty 0 t)
 
 -- the arguments of a data type: its segments' parameters and its lambdas
 dataArgs :: TC -> Id -> Env -> T [DExp]
@@ -628,9 +650,9 @@ recArgsI tc rid md fs = case M.lookup rid (tcGlob tc) >>= iRec of
     PLv x -> case lookup x fs of
       Just (VLvl l) -> (dlvl tc l :) <$> heads (ELvl r x l) ps
       _ -> Left ("the head level " ++ x ++ " of " ++ rid)
-    PTm x t -> case lookup x fs of
+    PTm x _ a -> case lookup x fs of
       Just v -> do
-        d <- readArgAt tc (paramTypeAt r t) v
+        d <- readArgAt tc (eval r a) v
         (d :) <$> heads (EVar r x v) ps
       Nothing -> Left ("the head parameter " ++ x ++ " of " ++ rid)
     PSelf _ _ -> Left "a record element as a head"
@@ -686,7 +708,7 @@ recordDecl tc i md out0 =
         tcG = tcH' { tcGlob = glob }
     -- the selectors: the element as a variable t, the earlier fields as
     -- its projections, the fixed ones as the parameters
-        hv = [ case p of { PLv x -> (x, VLvl (lvar x)); PTm x _ -> (x, lookupVal (cxEnv (tcCx tcH)) x)
+        hv = [ case p of { PLv x -> (x, VLvl (lvar x)); PTm x _ _ -> (x, lookupVal (cxEnv (tcCx tcH)) x)
                          ; PSelf x _ -> (x, VConst x []) } | p <- heads ]
         fixedVals = [ (x, v) | (x, v) <- hv, x `elem` xs ]
         selfTy = VSegT md hv
@@ -706,7 +728,7 @@ recordDecl tc i md out0 =
     up <- if null xs then Right [] else do
       ri0 <- maybe (Left ("the record " ++ i ++ " before its variant")) Right (M.lookup i (tcGlob tc0) >>= iRec)
       let rnames = [ n | (n, p) <- zip pnames (tcPars tcH), notFixed p ]
-          notFixed p = case p of { PTm x _ -> x `notElem` xs; _ -> True }
+          notFixed p = case p of { PTm x _ _ -> x `notElem` xs; _ -> True }
           lR = rLvl ri0
           elR = dapp (dv cEl) [dlvl tcH lR, dapp (dv (gname i)) (map dv rnames)]
           upN = cname self "up"
@@ -836,7 +858,7 @@ units tc path (u : us) out = case u of
                  Left m -> (out { rSkipped = (i, m) : rSkipped out }, False)
                glob' = if ok then M.insert x (Info [] Nothing True Nothing) (tcGlob tc) else tcGlob tc
            in units tcP { tcGlob = glob' } path us out'
-         else units tc { tcCx = cx', tcPars = tcPars tc ++ [PTm x va], tcNames = lname x : tcNames tc } path us out
+         else units tc { tcCx = cx', tcPars = tcPars tc ++ [PTm x va a], tcNames = lname x : tcNames tc } path us out
   ULock s -> units tc { tcCx = (tcCx tc) { cxLocks = Set.fromList s } } path us out
   UDir _ -> units tc path us out
   UMod i x k mus -> case k of
@@ -865,7 +887,7 @@ units tc path (u : us) out = case u of
         (tc2, out') = foldl (\(t, o) d -> definition d (t, o)) (tc1, out) g
     in units tc2 path rest out'
  where
-  parName p = case p of { PTm x _ -> lname x; PLv x -> lname x; PSelf n _ -> n }
+  parName p = case p of { PTm x _ _ -> lname x; PLv x -> lname x; PSelf n _ -> n }
 
 -- the type of a lifted constant: the parameters in scope, then t
 closeParams :: TC -> DExp -> DExp
@@ -877,14 +899,14 @@ paramBinds tc = go tc0 (tcPars tc)
  where
   -- the names of all the parameters are in scope in their types, so that
   -- no binder in a type captures a parameter
-  tc0 = tc { tcNames = [ case p of { PTm y _ -> lname y; PLv y -> lname y; PSelf n _ -> n } | p <- tcPars tc ] }
+  tc0 = tc { tcNames = [ case p of { PTm y _ _ -> lname y; PLv y -> lname y; PSelf n _ -> n } | p <- tcPars tc ] }
   go _ [] = []
   go t (p : ps) = case p of
     PLv x -> (lname x, dv cLvl) : go t ps
     PSelf n a -> case readType t a of
       Right da -> (n, da) : go t ps
       Left m -> (n, dv ("{|untranslated parameter type: " ++ filter (/= '|') (take 80 m) ++ "|}")) : go t ps
-    PTm x a -> case readType t a of
+    PTm x a _ -> case readType t a of
       Right da -> (lname x, da) : go t ps
       Left m -> (lname x, dv ("{|untranslated parameter type: " ++ filter (/= '|') (take 80 m) ++ "|}")) : go t ps
 
