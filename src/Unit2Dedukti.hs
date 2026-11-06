@@ -198,7 +198,7 @@ readNf tc t v = case v of
     VRec _ tel r -> readStruct tc tel r (map snd fs)
     t' -> Left ("a struct at the type " ++ showT tc t')
   VCon c vs -> case whnfT tc t of
-    VSum _ (_:_) _ _ _ -> Left "an indexed family: not translated yet"
+    VSum _ _ (_:_) _ _ -> Left "an indexed family: not translated yet"
     VSum st _ _ cs r -> case lookup c (plainCons cs) of
       Just tel -> do
         let d = dataId st
@@ -349,7 +349,7 @@ readCode tc v = case v of
     dx <- readNf tc a x
     dy <- readNf tc a y
     Right (dapp (dv cId) [dlvl tc la, ca, dx, dy], la)
-  VSum _ (_:_) _ _ _ -> Left "an indexed family: not translated yet"
+  VSum _ _ (_:_) _ _ -> Left "an indexed family: not translated yet"
   VSum st _ _ _ r -> do
     let d = dataId st
     as <- dataArgs tc d r
@@ -831,7 +831,7 @@ dataDecl tc d t b = go tc t (ev (tcCx tc) b) []
     (VLPi f, VLLam cl) -> do
       let (tc', l, n) = extendL tcx (lclosName cl)
       go tc' (lcapp f l) (lcapp cl l) (binds ++ [(n, dv cLvl)])
-    (VU _, VSum _ (_:_) _ _ _) -> Left "an indexed family: not translated yet"
+    (VU _, VSum _ _ (_:_) _ _) -> Left "an indexed family: not translated yet"
     (VU _, s@(VSum _ _ _ cs0 r)) -> do
       let cs = plainCons cs0
       (self, l) <- readCode tcx s
@@ -876,7 +876,7 @@ splitRules tc f t b = do
       t' -> Left ("level lambda at " ++ showT tcx t')
     Split st _ bs -> case whnfT tcx ty of
       VPi dom g -> case whnfT tcx dom of
-        VSum _ (_:_) _ _ _ -> Left "a split on an indexed family: not translated yet"
+        VSum _ _ (_:_) _ _ -> Left "a split on an indexed family: not translated yet"
         VSum dst _ _ cs0 r -> do
           let cs = plainCons cs0
           let d = dataId dst
