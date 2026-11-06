@@ -148,7 +148,16 @@ class Steps:
     def walk(self, e, depth=0):
         """The number of the line that proves e."""
         if isinstance(e, Var) and e.name in self.num:
+            if hasattr(self, 'used'):
+                self.used.add(e.name)
             return self.num[e.name]
+        if isinstance(e, Lam):
+            # the body of an introduction (forallI, ifI): its variable or
+            # assumption first, as the text says it
+            self.n += 1
+            self.num[e.name] = self.n
+            self.steps.append((self.n, Var(e.name), depth, {}))
+            return self.walk(e.body, depth)
         key = iv.show(e)
         if key in self.seen:
             return self.seen[key]
@@ -360,9 +369,15 @@ def main():
     open(base, 'w').write(open(os.path.join(ROOT, 'unit-nd.dk')).read() + '\n' + base_txt)
     pf = os.path.join(tmp, 'proofs.dk')
     open(pf, 'w').write(proofs_txt)
-    r = subprocess.run([run, '-proof-text', '-proof-text-dedukti', '-force-symbolic', '-languages=Eng',
-                        '-base=' + base, '-add-symboltables=' + table, pf], capture_output=True, text=True)
-    secs = re.split(r'\\subsection\*', r.stdout)[1:]
+    # one call for each proof, so that one that fails does not move the others
+    secs = []
+    for _, n0, t0, b0 in iv.judgements(proofs_txt):
+        f1 = os.path.join(tmp, 'one.dk')
+        open(f1, 'w').write('def %s : %s :=\n  %s.\n' % (n0, iv.show(t0), iv.show(b0)))
+        r = subprocess.run([run, '-proof-text', '-proof-text-dedukti', '-force-symbolic', '-languages=Eng',
+                            '-base=' + base, '-add-symboltables=' + table, f1], capture_output=True, text=True)
+        sec = re.split(r'\\subsection\*', r.stdout)[1:]
+        secs.append(sec[0] if sec else '')
     # the statements, read symbolically
     proofs = iv.judgements(proofs_txt)
     stmts = os.path.join(tmp, 'stmts.dk')
@@ -427,15 +442,24 @@ def main():
         hyps, tt, bb = [], t, b
         while isinstance(bb, Lam) and isinstance(tt, Pi):
             h, _ = iv.spine(tt.typ)
-            if isinstance(h, Var) and h.name == 'Proof':
+            # the hypotheses that the proof uses: the others have no line
+            if isinstance(h, Var) and h.name == 'Proof' and iv.free(bb.body, bb.name):
                 hyps.append(bb.name)
             bb, tt = bb.body, tt.body
+        # the hypotheses that are premisses of steps, in their order: a first
+        # walk finds them
+        probe = Steps(types, [(x, 0) for x in hyps])
+        probe.used = set()
+        probe.walk(bb)
+        hyps = [x for x in hyps if x in probe.used]
         st = Steps(types, [(x, i + 1) for i, x in enumerate(hyps)])
         st.walk(bb)
         # the steps against the text's lines: the rule of each
         rules = [re.sub(r'\\texttt\{(.*?)\}.*', r'\1', row[2]).replace('\\_', '_').strip() for row in dkt]
+        # (a variable of an introduction is a line without a rule)
         ok = len(dkt) == len(hyps) + len(st.steps) and all(
-            rules[num - 1] == iv.spine(e)[0].name for num, e, _, _ in st.steps if isinstance(iv.spine(e)[0], Var))
+            rules[num - 1] == iv.spine(e)[0].name for num, e, _, _ in st.steps
+            if isinstance(iv.spine(e)[0], Var) and not isinstance(e, Var))
         report.append('%s: %d lines, %d hypotheses and %d steps%s' % (n, len(dkt), len(hyps), len(st.steps),
                                                                      '' if ok else ' (NOT ALIGNED)'))
         pid = re.sub(r'\W', '_', n)
@@ -445,10 +469,20 @@ def main():
         body.append('<div class="stmt">%s</div>' % html.escape(reading.get(n, '')))
         orig = texts.get(q.split('.')[-1])
         if tex:
-            found = align.find_text(open(tex).read(), q.split('.')[-1], numbers)
+            found = align.find_text(open(tex).read(), q, numbers)
             if found:
                 where, stm, prf = found
                 # the steps: their conclusions (the Dedukti lines), rules and data arguments
+                # the local definitions of the modules (short lowercase names), with their values
+                align.DEFTERMS = {}
+                for _, dn, _, db in iv.judgements(base_txt):
+                    last = (dn or '').split('_')[-1]
+                    if db is not None and len(last) <= 2 and last.islower():
+                        ps = []
+                        while isinstance(db, Lam):
+                            ps.append(db.name)
+                            db = db.body
+                        align.DEFTERMS[dn] = (ps, db)
                 concl = {}
                 for k, row in enumerate(dkt, 1):
                     m = re.match(r'\\verb#(?:[^#:]* : )?(.*)#$', row[1].replace('\\hspace*{1.5em}', ''))
@@ -461,18 +495,28 @@ def main():
                 data = {num: [align.norm(a) for k2, a in enumerate(iv.spine(e)[1]) if k2 not in prem]
                         for num, e, _, prem in st.steps}
                 steps = {k: (concl.get(k), rule.get(k), data.get(k, [])) for k in range(1, len(dkt) + 1)}
-                vars_ = set()
+                vars_ = set(align.LOCAL)
+                # the values of the local definitions of the module (t = gcd(d, a0))
+                align.DEFS = {}
+                for _, dn, _, db in iv.judgements(base_txt):
+                    if db is not None and dn.split('_')[-1] in align.LOCAL:
+                        while isinstance(db, Lam):
+                            db = db.body
+                        v = align.norm(db)
+                        if v[0] not in ('app', '?'):
+                            align.DEFS[dn.split('_')[-1]] = v
                 bb2 = b
                 while isinstance(bb2, Lam):
                     vars_.add(bb2.name)
                     bb2 = bb2.body
-                orig = {'where': where, 'statement': align.align(stm, steps, vars_),
+                orig = {'where': where, 'statement': align.align(stm, steps, vars_) if stm else [],
                         'proof': align.align(prf, steps, vars_) if prf else [['(no proof in the text)', []]]}
-                aligned[q.split('.')[-1]] = orig
+                aligned[q] = orig
         if orig:
             body.append('<div class="lab">The original text</div><div class="orig"><div class="where">%s</div>'
-                        '<div><b>Statement.</b> %s</div><div><b>Proof.</b> %s</div></div>'
-                        % (html.escape(orig['where']), orig_html(orig['statement'], anchor),
+                        '%s<div><b>Proof.</b> %s</div></div>'
+                        % (html.escape(orig['where']),
+                           '<div><b>Statement.</b> %s</div>' % orig_html(orig['statement'], anchor) if orig['statement'] else '',
                            orig_html(orig['proof'], anchor)))
         body.append('<div class="lab">Unit source</div><pre class="unit">%s</pre>' % html.escape(src or '(not found)'))
         rows = {}

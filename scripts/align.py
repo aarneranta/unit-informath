@@ -58,10 +58,41 @@ def clean(s, refs):
     return re.sub(r'\s+', ' ', s).strip()
 
 
-def find_text(tex, name, numbers):
-    """(where, statement, proof) of the declaration named name, or None;
-    numbers: label -> (number, page) of the compiled text."""
+def module_region(tex, module):
+    """The text of a module's proof: from its mention (module \\nm{M}, or a
+    lemma named after it) to the end of the proof it is in, without the
+    items of the modules mentioned inside it; and where it starts."""
+    m = re.search(r'module \\nm\{%s\}' % re.escape(module), tex) or \
+        re.search(r'\\begin\{(lemma|theorem)\}\[[^\]]*\\nm\{%s\}' % re.escape(module), tex)
+    if not m:
+        return None, None
+    end = tex.find('\\end{proof}', m.end())
+    region = tex[m.end():end if end >= 0 else len(tex)]
+    # a module inside: from its mention to the end of its list
+    region = re.sub(r'module \\nm\{(?!%s\})[^}]*\}.*?\\end\{itemize\}' % re.escape(module), '', region, flags=re.S)
+    return region, m.start()
+
+
+def enclosing_lemma(tex, pos, numbers):
+    """The number and page of the lemma whose proof a position is in."""
+    best = None
+    for m in re.finditer(r'\\begin\{(lemma|theorem|corollary)\}(\[[^\]]*\])?(.*?)\\end\{\1\}', tex, re.S):
+        if m.start() < pos:
+            best = m
+    if best is None:
+        return '?', '?'
+    lab = re.search(r'\\label\{([^}]*)\}', best.group(3))
+    return numbers.get(lab.group(1), ('?', '?')) if lab else ('?', '?')
+
+
+def find_text(tex, qname, numbers):
+    """(where, statement, proof) of the declaration with the qualified name
+    qname, or None; numbers: label -> (number, page) of the compiled text.
+    A member of a module (Tail.eq) is an item (\\nm{eq}) of its module's
+    proof: its text is the proof."""
     refs = {l: (numbers.get(l, ('?', '?'))[0], ns) for l, ns in labels(tex).items()}
+    parts = qname.split('.')
+    name = parts[-1]
     nm = r'\\nm\{%s\}' % re.escape(name)
     # a lemma named after it
     for m in re.finditer(r'\\begin\{(lemma|theorem|corollary)\}\[([^\]]*)\](.*?)\\end\{\1\}', tex, re.S):
@@ -86,7 +117,35 @@ def find_text(tex, name, numbers):
                     proof = clean('(%d)' % k + p.group(1), refs) if p else ''
                 return ('%s %s (%d), p. %s' % (m.group(1).capitalize(), num, k, page),
                         clean(it.replace('\\end{enumerate}', ''), refs), proof)
+    # else a member of a module: an item of its module's proof
+    if len(parts) >= 2:
+        region, start = module_region(tex, parts[-2])
+        if region:
+            it = re.search(r'\\item\s*\(%s\)(.*?)(?=\\item|\\end\{(?:itemize|enumerate)\}|$)' % nm, region, re.S)
+            if it:
+                num, page = enclosing_lemma(tex, start, numbers)
+                return ('Lemma %s, proof (module %s), item %s, p. %s' % (num, parts[-2], name, page), '',
+                        clean(it.group(1), refs))
     return None
+
+
+# claims in words between formulas, read as relations: (words, relation,
+# number of formulas); the text's phrasings, as the symbol table's entries
+# (Common, Prim) have them
+VERBAL = [(r'is a common divisor of', 'common', 2), (r'is primitive', 'prim', 1)]
+CLAIMS = []       # the claims of the text: (display, relation, its formulas)
+
+
+def verbal(text):
+    """$X$ is a common divisor of $Y$ as one formula $\\CLAIMk$, kept in
+    CLAIMS with what it says."""
+    for words, rel, k in VERBAL:
+        pat = r'\$([^$]*)\$\s+' + words + (r'\s+\$([^$]*)\$' if k == 2 else '')
+        def one(m):
+            CLAIMS.append((m.group(0), rel, m.groups()))
+            return '$\\CLAIM%d$' % (len(CLAIMS) - 1)
+        text = re.sub(pat, one, text)
+    return text
 
 
 def fragments(text):
@@ -95,7 +154,7 @@ def fragments(text):
     formula up to the end of a clause (. , ; or a closing bracket) belong
     to the fragment before, and so do the words after the last formula."""
     out, words = [], ''
-    for part in re.split(r'(\$[^$]*\$)', text):
+    for part in re.split(r'(\$[^$]*\$)', verbal(text)):
         if not part.startswith('$'):
             m = re.match(r'^(.*[.,;)])(\s.*)$', part, re.S) if out else None
             if m:
@@ -153,8 +212,11 @@ class TexParser:
 
     def __init__(self, s):
         s = s.replace('\\gcdd', ' gcd ').replace('\\operatorname{gcd}', ' gcd ').replace('\\cdot', ' * ')
-        s = s.replace('\\mid', ' | ').replace('\\,', ' ')
-        self.t = re.findall(r'gcd|[A-Za-z]|\d|[()=|+\-*,]', s)
+        s = s.replace('\\mid', ' | ').replace('\\,', ' ').replace('\\cont', ' cont ').replace('\\mathrm{c}', ' cont ')
+        # p_0 is the variable p0
+        s = re.sub(r'([A-Za-z])_(\d)', r'\1\2', s)
+        s = re.sub(r'([A-Za-z])_\{(\d)\}', r'\1\2', s)
+        self.t = re.findall(r'gcd|cont|[A-Za-z]\d?|\d|[()=|+\-*,_{}]', s)
         self.i = 0
 
     def peek(self):
@@ -178,21 +240,37 @@ class TexParser:
             e = ('-', self.prod())
         else:
             e = self.prod()
-        while self.peek() == '+':
-            self.eat()
-            e = ('+', e, self.prod())
+        while self.peek() in ('+', '-'):
+            op = self.eat()
+            r = self.prod()
+            e = ('+', e, r if op == '+' else ('-', r))
         return e
 
     def prod(self):
         e = self.atom()
-        while self.peek() is not None and (self.peek() == '*' or self.peek() == '(' or
-                                           self.peek() == 'gcd' or re.match(r'[A-Za-z\d]', self.peek())):
+        while self.peek() is not None and (self.peek() in ('*', '(', 'gcd', 'cont', '{') or
+                                           re.match(r'[A-Za-z\d]', self.peek())):
             if self.peek() == '*':
                 self.eat()
             e = ('*', e, self.atom())
         return e
 
     def atom(self):
+        """an atom with its subscripts: p_i, (pq)_{i+1} are coefficients"""
+        e = self.atom0()
+        while self.peek() == '_':
+            self.eat()
+            if self.peek() == '{':
+                self.eat()
+                i = self.sum()
+                if self.peek() == '}':
+                    self.eat()
+            else:
+                i = self.atom0()
+            e = ('coef', e, i)
+        return e
+
+    def atom0(self):
         t = self.peek()
         if t is None:
             raise SyntaxError('end')
@@ -202,6 +280,12 @@ class TexParser:
             if self.peek() == ')':
                 self.eat()
             return ops[0]
+        if t == 'cont' and self.peek() == '(':
+            self.eat()
+            a = self.sum()
+            if self.peek() == ')':
+                self.eat()
+            return ('c', a)
         if t == 'gcd':
             if self.peek() == '(':
                 self.eat()
@@ -217,6 +301,11 @@ class TexParser:
             return ('n', t)
         if re.match(r'[A-Za-z]', t):
             return ('v', t)
+        if t == '{':
+            e = self.sum()
+            if self.peek() == '}':
+                self.eat()
+            return e
         raise SyntaxError(t)
 
 
@@ -233,6 +322,8 @@ def tex_relations(math, idx):
     end = min(1 if idx == 0 else idx + 1, len(ops) - 1)
     return [('|' if '|' in rels[j:end] else '=', ops[j], ops[end]) for j in range(end)], None
 
+
+LOCAL = set()     # the names of the local definitions met (x, y, t): not wildcards
 
 SIMPLE = {'mul': '*', 'pmul': '*', 'add': '+', 'addP': '+'}
 
@@ -257,12 +348,28 @@ def norm(e):
                 return ('|', b[2][1], b[1])
         if n == 'Id' and len(args) == 3:
             return ('=', norm(args[1]), norm(args[2]))
+        if n == 'peq' and len(args) >= 2:
+            return ('=', norm(args[-2]), norm(args[-1]))
+        if n.endswith('Common') and len(args) >= 2:
+            return ('common', norm(args[-2]), norm(args[-1]))
+        if n.endswith('Prim') and args and isinstance(args[-1], iv.Lam):
+            b = norm(args[-1].body)
+            if b[0] == 'coef':
+                return ('prim', b[1])
+        # for all i, x divides the i-th coefficient of f: x is a common divisor of f
+        if n == 'forall' and len(args) == 2 and isinstance(args[1], iv.Lam):
+            i = args[1].name
+            c = norm(args[1].body)
+            if c[0] == '|' and c[2][0] == 'coef' and c[2][2] == ('v', i):
+                return ('common', c[1], c[2][1])
         if n == 'Div' and len(args) >= 2:
             return ('|', norm(args[-2]), norm(args[-1]))
         if n in SIMPLE and len(args) >= 2:
             return (SIMPLE[n], norm(args[-2]), norm(args[-1]))
         if n == 'neg' and args:
             return ('-', norm(args[-1]))
+        if n == 'Ring_Nat_zero':
+            return ('n', '0')
         if n == 'z':
             return ('n', '0')
         if n == 'o':
@@ -271,13 +378,44 @@ def norm(e):
             return ('gcd', norm(args[-2]), norm(args[-1]))
         if n in ('fst', 'andEl') and args:
             return norm(args[-1])
+        # polynomials: a + Xp, coefficients, contents, X p, scalars
+        if n == 'cons' and len(args) == 3:
+            return ('+', norm(args[1]), ('*', ('v', 'X'), norm(args[2])))
+        if n == 'shift' and args:
+            return ('*', ('v', 'X'), norm(args[-1]))
+        if n == 'scal' and len(args) >= 2:
+            return ('*', norm(args[-2]), norm(args[-1]))
+        if n.endswith('coef') and len(args) >= 2:
+            return ('coef', norm(args[-2]), norm(args[-1]))
+        if n == 'Ring_Nat_suc' and args:
+            return ('+', norm(args[-1]), ('n', '1'))
+        if n == 'Ring_Nat_zero':
+            return ('n', '0')
+        if n.endswith('content') and args:
+            return ('c', norm(args[-1]))
+        # a local definition of a module at its parameters (x, y of Tail,
+        # t of One): the text names it so
+        last = n.split('_')[-1]
+        if args and all(isinstance(a, iv.Var) for a in args) and len(last) <= 2 and last.islower():
+            LOCAL.add(last)
+            return ('v', last)
+        # a local definition at other arguments (t of One at a, p, g): its value there
+        if n in DEFTERMS and len(args) == len(DEFTERMS[n][0]):
+            ps, body = DEFTERMS[n]
+            return norm(iv.subst_vars(body, dict(zip(ps, args))))
     return ('app', iv.show(e))
+
+
+DEFS = {}         # a local definition's name -> its value (set by the caller)
+DEFTERMS = {}     # a local definition (its constant) -> its parameters and value (set by the caller)
 
 
 def match(t, f, vars_, sub):
     """Whether the text's term t is the formal term f; a letter of t that is
     not a variable of the theorem matches any term, the same one wherever
-    it occurs."""
+    it occurs; the name of a local definition matches its value too."""
+    if t[0] == 'v' and t[1] in DEFS and f != t and match(DEFS[t[1]], f, vars_, sub):
+        return True
     if t[0] == 'v' and t[1] not in vars_:
         if t[1] in sub:
             return sub[t[1]] == f
@@ -294,6 +432,10 @@ def rel_matches(r, concl, vars_):
     rel, x, y = r
     if not isinstance(concl, tuple) or concl[0] != rel:
         return False
+    # an equation of polynomials, stated by their coefficients
+    if rel == '=' and concl[1][0] == 'coef' and concl[2][0] == 'coef' and concl[1][2] == concl[2][2] and \
+            x[0] != 'coef' and rel_matches(r, ('=', concl[1][1], concl[2][1]), vars_):
+        return True
     if match(x, concl[1], vars_, {}) and match(y, concl[2], vars_, {}) and \
             (lambda s: match(x, concl[1], vars_, s) and match(y, concl[2], vars_, s))({}):
         return True
@@ -319,11 +461,23 @@ def align(text, steps, vars_):
         for n in names:
             n2 = re.sub(r'[-.]', '_', n.split(',')[0].strip())
             hit |= {k for k, (_, rule, _) in steps.items() if rule and (rule == n2 or rule.endswith('_' + n2))}
+        claim = re.match(r'\\CLAIM(\d+)$', piece or '')
+        if claim:
+            disp, rel, forms = CLAIMS[int(claim.group(1))]
+            try:
+                terms = [TexParser(f).sum() for f in forms]
+                hit |= {k for k, (c, _, _) in steps.items()
+                        if isinstance(c, tuple) and c[0] == rel and len(c) == len(terms) + 1 and
+                        (lambda s: all(match(t, f, vars_, s) for t, f in zip(terms, c[1:])))({})}
+            except (SyntaxError, IndexError):
+                pass
+            out.append([words + disp + after, sorted(hit)])
+            continue
         if piece is not None and not re.search(r'\bwith\s*$', words):
             rels, term = tex_relations(math, idx)
             for r in rels:
                 hit |= {k for k, (c, _, _) in steps.items() if rel_matches(r, c, vars_)}
-            if term is not None:
+            if term is not None and term[0] not in ('v', 'n'):
                 hit |= {k for k, (_, _, data) in steps.items() if any(match(term, d, vars_, {}) for d in data)}
         text_piece = words + ('$%s$' % piece if piece is not None else '') + after
         out.append([text_piece, sorted(hit)])

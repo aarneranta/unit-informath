@@ -28,3 +28,15 @@ andI : (A : Prop) -> (B : Prop) -> (a : Proof A) -> (b : Proof B) -> Proof (and 
 andEl : (A : Prop) -> (B : Prop) -> (c : Proof (and A B)) -> Proof A.
 
 andEr : (A : Prop) -> (B : Prop) -> (c : Proof (and A B)) -> Proof B.
+
+(; for all and if: their introductions (a lambda proving them) and
+   eliminations (a hypothesis applied to an object or a proof) ;)
+forallI : (A : Set) -> (B : ((x : Elem A) -> Prop)) ->
+  (b : ((x : Elem A) -> Proof (B x))) -> Proof (forall A (x => B x)).
+
+forallE : (A : Set) -> (B : ((x : Elem A) -> Prop)) ->
+  Proof (forall A (x => B x)) -> (a : Elem A) -> Proof (B a).
+
+ifI : (A : Prop) -> (B : Prop) -> (b : ((x : Proof A) -> Proof B)) -> Proof (if A B).
+
+ifE : (A : Prop) -> (B : Prop) -> Proof (if A B) -> Proof A -> Proof B.

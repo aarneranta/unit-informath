@@ -139,7 +139,22 @@ that is not a variable of the theorem matching any term), to the steps that
 have its lone term as an argument, and to the steps that apply a lemma it
 names. The alignment is written to `out/proofs-alignment.json`;
 `proof-sample.json` is the same alignment made by hand (`-text=`), for
-comparison.
+comparison. The proofs of Gauss's lemma in the text are lists of items,
+each the proof of a member of a Unit module (Tail.eq, PrimStep.One.tc, ...),
+found in the text by the module's name:
+
+    T=Theory.Gauss.Direct.Tail; O=Theory.Gauss.Direct.PrimStep.One; S=Theory.Gauss.Direct.PrimStep
+    python3 scripts/proof_sample.py out/gcddomain.dk out/gcddomain.dkgf gcddomain-view.dkgf \
+      ../unit/sag/gcddomain out/proofs-gauss.html $T.eq $T.dx $T.dxy $T.result $O.ht $O.tc $O.ct \
+      $O.result $S.cpA $S.db $S.result -text-auto=../unit/doc/gcddomain.tex
+
+For these, the view also reads a hypothesis applied to arguments as forallE
+and ifE (unfolding the propositions it defines, such as Rec N), and a
+lambda proving a forall or an if as forallI or ifI. All 11 proofs get proof
+texts numbered as the steps, and 23 of the 28 fragments of their texts are
+linked; the others are words such as "by the claim for $a$, $p$, $g$".
+A definition by split (One.coeffs) has rules, not a proof term, and is not
+shown.
 
 For proofs, the view reads a pair at a sigma of a proposition as existsI (its
 projections as fst, snd), and J at a motive that does not use the path, as

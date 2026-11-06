@@ -163,6 +163,16 @@ def show(e, prec=0):
     return '(%s)' % s if prec > 0 else s
 
 
+def subst_vars(e, m):
+    """e with the free variables of m replaced by their terms."""
+    if isinstance(e, Var):
+        return m.get(e.name, e)
+    if isinstance(e, App):
+        return App(subst_vars(e.fun, m), subst_vars(e.arg, m))
+    inner = {k: v for k, v in m.items() if k != e.name}
+    return type(e)(e.name, subst_vars(e.typ, m) if e.typ is not None else None, subst_vars(e.body, inner))
+
+
 def names(e, acc):
     """All the identifiers of a term."""
     if isinstance(e, Var):
@@ -243,6 +253,7 @@ class View:
         self.variants = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\[.*\]\|\}$', n)}
         self.ups = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\]\.up\|\}$', n)}
         self.with_selectors = False
+        self.prop_defs = {}  # a defined proposition -> (its parameters, its definiens)
         self.arity = {}     # constant -> the number of its arguments that stay
         for _, n, t, _ in decls:
             if n:
@@ -384,9 +395,79 @@ class View:
                 env[body.name] = self.dropped(tt.typ)
             body, tt = body.body, tt.body
         d = self.term(body, env)
+        # the hypotheses and their propositions, for the eliminations
+        hyps, tt = {}, ty
+        while isinstance(tt, Pi):
+            h, hargs = spine(tt.typ)
+            if isinstance(h, Var) and h.name == 'Proof' and tt.name:
+                hyps[tt.name] = hargs[0]
+            tt = tt.body
+        d = self.elims(d, hyps)
+        # a lambda beyond the statement's parameters: the proof of a forall
+        # or an if that the statement's proposition is
+        if isinstance(d, Lam):
+            h, hargs = spine(tt)
+            if isinstance(h, Var) and h.name == 'Proof' and hargs:
+                d = self.intro(d, hargs[0])
         for x in reversed(names):
             d = Lam(x, None, d)
         return 'def %s : %s :=\n  %s.' % (n, show(ty), show(d))
+
+    def unfold(self, p):
+        """A defined proposition applied to its arguments, unfolded (until
+        it is a forall, if, not, or not a definition)."""
+        for _ in range(20):
+            h, args = spine(p)
+            if not (isinstance(h, Var) and h.name in self.prop_defs):
+                return p
+            names_, body = self.prop_defs[h.name]
+            if len(args) != len(names_):
+                return p
+            p = subst_vars(body, dict(zip(names_, args)))
+        return p
+
+    def elims(self, e, hyps):
+        """A hypothesis applied to arguments as forallE and ifE, by its
+        proposition; a lambda given where these need a proof of a forall or
+        an if as forallI or ifI."""
+        if isinstance(e, Lam):
+            return Lam(e.name, e.typ, self.elims(e.body, hyps))
+        if not isinstance(e, App):
+            return e
+        h, args = spine(e)
+        args = [self.elims(a, hyps) for a in args]
+        if isinstance(h, Var) and h.name in hyps:
+            cur, prop = h, hyps[h.name]
+            for a in args:
+                p = self.unfold(prop)
+                hp, pargs = spine(p)
+                if isinstance(hp, Var) and hp.name == 'forall' and len(pargs) == 2 and isinstance(pargs[1], Lam):
+                    lam = pargs[1]
+                    cur = apps(Var('forallE'), [pargs[0], lam, cur, a])
+                    prop = subst_vars(lam.body, {lam.name: a})
+                elif isinstance(hp, Var) and hp.name == 'if' and len(pargs) == 2:
+                    cur = apps(Var('ifE'), [pargs[0], pargs[1], cur, self.intro(a, pargs[0])])
+                    prop = pargs[1]
+                elif isinstance(hp, Var) and hp.name == 'not' and len(pargs) == 1:
+                    cur = apps(Var('ifE'), [pargs[0], Var('false'), cur, self.intro(a, pargs[0])])
+                    prop = Var('false')
+                else:
+                    return apps(h, args)
+            return cur
+        return apps(h if isinstance(h, Var) else self.elims(h, hyps), args)
+
+    def intro(self, a, prop):
+        """A lambda given as the proof of a forall or an if: forallI, ifI."""
+        if not isinstance(a, Lam):
+            return a
+        p = self.unfold(prop)
+        hp, pargs = spine(p)
+        if isinstance(hp, Var) and hp.name == 'forall' and len(pargs) == 2 and isinstance(pargs[1], Lam):
+            body = subst_vars(pargs[1].body, {pargs[1].name: Var(a.name)})
+            return apps(Var('forallI'), [pargs[0], Lam(a.name, None, body), Lam(a.name, None, self.intro(a.body, body))])
+        if isinstance(hp, Var) and hp.name == 'if' and len(pargs) == 2:
+            return apps(Var('ifI'), [pargs[0], pargs[1], Lam(a.name, None, self.intro(a.body, pargs[1]))])
+        return a
 
     def levels(self, c):
         """The level arguments of the prelude's constants (they are not in self.drop)."""
@@ -522,6 +603,24 @@ class View:
         res = ty
         while isinstance(res, Pi):
             res = res.body
+        # with -proofs, a definition of an element keeps its definiens too:
+        # the values of the local definitions (t = gcd(d, a0)) that texts name
+        rh, _ = spine(res)
+        if b is not None and self.with_selectors and isinstance(rh, Var) and rh.name == 'Elem' and not stripped:
+            body, env, names, tt = b, {}, [], t
+            while isinstance(body, Lam) and isinstance(tt, Pi):
+                if self.goes(tt.name, tt.typ):
+                    env[body.name] = None
+                else:
+                    names.append(body.name)
+                body, tt = body.body, tt.body
+            try:
+                d = self.term(body, env)
+            except (IndexError, RecursionError):
+                return '%s : %s.' % (n, show(ty))
+            for x in reversed(names):
+                d = Lam(x, None, d)
+            return 'def %s : %s :=\n  %s.' % (n, show(ty), show(d))
         if b is not None and isinstance(res, Var) and res.name == 'Set':
             body, env = b, {}
             # the definiens' lambdas, as the type's binders
@@ -536,6 +635,7 @@ class View:
             p = self.prop(body, env)
             if p is not None:
                 self.props.add(n)
+                self.prop_defs[n] = (list(names), p)
                 ty = self.retype(ty, Var('Prop'))
                 d = p
             else:
