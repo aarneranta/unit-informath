@@ -106,9 +106,18 @@ theorems are their statements. `gcddomain-view.dkgf` is the symbol table:
     python3 scripts/informal_view.py out/gcddomain.dk out/gcddomain.dkgf > out/gcddomain-view.dk
     RunInformath -add-symboltables=gcddomain-view.dkgf -to-lang=Eng out/gcddomain-view.dk
 
-For instance div-trans: "Let $A$ be a commutative ring. Let $a$, $b$ and $c$
-be elements of $R$ such that $a$ divides $b$ and $b$ divides $c$. Then $a$
-divides $c$."
+    RunInformath -add-symboltables=gcddomain-view.dkgf -to-latex-doc -to-lang=Eng out/gcddomain-view.dk > out/gcddomain-informal.tex
+
+All 626 declarations of the view get a reading (about 15 s, 60 pages of
+LaTeX). For instance div-trans: "Let $A$ be a commutative ring. Let $a$,
+$b$ and $c$ be elements of $R$ such that $a$ divides $b$ and $b$ divides
+$c$. Then $a$ divides $c$.", Gauss's lemma (Direct.gauss): "Let $p$ and $q$
+be elements of $\mathcal{P}$ such that the function that maps $k$ to $p_k$
+is primitive. Let $d$ be an element of $R$ such that $d$ is a common divisor
+of the coefficients of $pq$. Let $i$ be a natural number. Then $d$ divides
+$q_i$.", and the main theorem (PolyGcd.Over.domain): "Let $A$ be a
+commutative ring. Let $G$ be a gcd domain on $A$. Then Over_domain applied
+to $A$ and $G$ is a gcd domain on $A[X]$."
 
 ## What is not translated yet
 

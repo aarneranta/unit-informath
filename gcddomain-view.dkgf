@@ -24,5 +24,43 @@ isSet : "#1 is a set"
 (; divisibility and gcd domains ;)
 Div : "#2 divides #3" | $#2 \mid #3$
 GcdOf : "#2 and #3 have a greatest common divisor"
-GcdDomain : "gcd domain"
+GcdDomain : "gcd domain on #1"
 Gcd_gcd : $\gcd(#3, #4)$
+
+(; natural numbers and lists (Ring.seg) ;)
+Ring_Nat : natural_Noun | \Natural
+Ring_Nat_zero : $0$
+Ring_Nat_suc : $#1 + 1$
+List : list_Fam
+
+(; polynomials as lists of coefficients, the constant term first (Poly.seg,
+   Mul.seg): cons a p is a + Xp ;)
+P : $\mathcal{P}$
+nil : $0$
+cons : $#2 + X #3$
+PolyR_coef : ${#2}_{#3}$
+plen : $|#2|$
+peq : "#2 is equivalent to #3" | $#2 \sim #3$
+addP : $#2 + #3$
+scal : $#2 #3$
+pmul : $#2 #3$
+
+(; the ring A[X], as a quotient of the lists (PolynomialRing.seg) ;)
+Carrier : $#1[X]$
+ring : $#1[X]$
+include : $[#3]$
+zeroQ : $0$
+oneQ : $1$
+addQ : $#3 + #4$
+mulQ : $#3 #4$
+negQ : $- #3$
+
+(; content, primitive polynomials, bounds (Content.seg, PolyBase.seg,
+   Elimination.seg, PolyGcd.seg) ;)
+Pol : $#1[X]$
+Direct_content : $\mathrm{c}(#3)$
+Over_content : $\mathrm{c}(#3)$
+PolyBase_Over_coef : ${#3}_{#4}$
+Content_Over_Prim : "#3 is primitive"
+Common : "#3 is a common divisor of the coefficients of #4"
+Elimination_Over_Bounded : "#4 is bounded by #3"

@@ -40,6 +40,7 @@ import re
 import sys
 
 BACKGROUND = ['univ', 'images', 'surjections']
+CODES = {'pi': 'PiType', 'sigma': 'SigmaType', 'id': 'IdType'}
 LEVEL_TYPE = 'Lvl'
 
 # ---------------------------------------------------------------- terms
@@ -162,6 +163,21 @@ def show(e, prec=0):
     return '(%s)' % s if prec > 0 else s
 
 
+def names(e, acc):
+    """All the identifiers of a term."""
+    if isinstance(e, Var):
+        acc.add(e.name)
+    elif isinstance(e, App):
+        names(e.fun, acc)
+        names(e.arg, acc)
+    else:
+        acc.add(e.name)
+        if e.typ is not None:
+            names(e.typ, acc)
+        names(e.body, acc)
+    return acc
+
+
 def free(e, x):
     if isinstance(e, Var):
         return e.name == x
@@ -226,9 +242,14 @@ class View:
         # the variants of records with fixed fields, and their coercions
         self.variants = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\[.*\]\|\}$', n)}
         self.ups = {n for _, n, _, _ in decls if n and re.match(r'\{\|.*\]\.up\|\}$', n)}
+        self.arity = {}     # constant -> the number of its arguments that stay
         for _, n, t, _ in decls:
             if n:
                 self.drop[n] = self.dropped(t)
+                k, tt = 0, t
+                while isinstance(tt, Pi):
+                    k, tt = k + 1, tt.body
+                self.arity[n] = k - len(self.drop[n])
 
     def dropped(self, t):
         """The argument positions a type's binders give that go: levels and
@@ -282,8 +303,26 @@ class View:
                 if p is not None:
                     return p
             args = [self.term(a, env) for a in args]
+            # a constant applied to fewer arguments than it takes (coef p, a
+            # sequence): eta-expanded, since its notation needs them all
+            if name in self.arity and name not in env and len(args) < self.arity[name]:
+                used = set()
+                for a in args:
+                    names(a, used)
+                fresh = []
+                for k in range(self.arity[name] - len(args)):
+                    v = 'k' if k == 0 else 'k%d' % k
+                    while v in used or v in fresh:
+                        v += "'"
+                    fresh.append(v)
+                e2 = apps(h, args + [Var(v) for v in fresh])
+                for v in reversed(fresh):
+                    e2 = Lam(v, None, e2)
+                return e2
             if name in ('pi', 'sigma', 'id', 'pair', 'fst', 'snd', 'refl', 'J', 'El'):
-                return apps(Var(name), args[self.levels(name):])
+                # the codes of types as arguments, named apart from Informath's
+                # own sigma (a sum) and pi
+                return apps(Var(CODES.get(name, name)), args[self.levels(name):])
             return apps(h, args)
         return apps(self.term(h, env), [self.term(a, env) for a in args])
 
