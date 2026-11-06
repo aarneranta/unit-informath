@@ -35,6 +35,9 @@ import qualified Dedukti.AbsDedukti as D
 import qualified Data.Map as M
 import qualified Data.Set as Set
 import Data.Char (isAlphaNum)
+import Data.List (intercalate, isPrefixOf)
+import System.IO.Unsafe (unsafePerformIO)
+import Control.Exception (evaluate, catch, ErrorCall(..))
 
 ------------------------------------------------------------------------
 -- Dedukti syntax
@@ -121,6 +124,8 @@ data TC = TC
   , tcNames :: [String]               -- the Dedukti names in scope
   , tcGlob  :: Glob
   , tcPars  :: [Param]                -- the parameters in scope
+  , tcVariants :: Set.Set (Id, [Name]) -- the records with fixed fields, R[ps][x := e],
+                                       -- that the program uses: the record and the fields
   }
 
 type T a = Either String a
@@ -171,6 +176,17 @@ lift tc l m c
 whnfT :: TC -> Val -> Val
 whnfT _ = whnf Set.empty
 
+-- the same where the type may fail to evaluate (Seg's errors are calls of
+-- error): Nothing then
+whnfSafe :: TC -> Val -> Maybe Val
+whnfSafe tc v = unsafePerformIO ((Just <$> evaluate (forced (whnfT tc v))) `catch` \e -> const (return Nothing) (e :: ErrorCall))
+ where
+  -- a record type also its record (looked up by evaluation) and its fields' names
+  forced w = case w of
+    VSegT md fs -> length (modId md) `seq` length (modUnits md) `seq` length (concatMap fst fs) `seq` w
+    _ -> w
+{-# NOINLINE whnfSafe #-}
+
 -- a value of type t
 readNf :: TC -> Val -> Val -> T DExp
 readNf tc t v = case v of
@@ -208,12 +224,17 @@ readNf tc t v = case v of
       Nothing -> Left ("constructor " ++ c ++ " not in its type")
     t' -> Left ("a constructor at the type " ++ showT tc t')
   VInst m r -> do
-    -- new R[ps, v1, .., vn]: the constructor at the parameters and the fields
-    let rid = dataId (modId m)
-        heads = [ (h, lookupDyn r h) | h <- recordHeads m ]
-    as <- recArgs tc m heads
-    ds <- mapM (\(y, ta) -> readNf tc (eval r ta) (lookupDyn r y)) (recordFieldUnits m)
-    Right (dapp (dv (cname rid "mk")) (as ++ ds))
+    -- new R[ps, v1, .., vn]: the constructor at the parameters and the
+    -- fields, those of the record the type is (with the fields it fixes as
+    -- parameters, if it fixes some)
+    let heads = [ (h, lookupDyn r h) | h <- recordHeads m ]
+        fs = case whnfSafe tc t of { Just (VSegT _ fs') -> fs'; _ -> heads }
+        fixed = map fst (fixedOf m fs)
+    i <- recId tc m fs
+    as <- recArgsI tc i m fs
+    ds <- mapM (\(y, ta) -> readNf tc (eval r ta) (lookupDyn r y))
+               [ f | f@(y, _) <- recordFieldUnits m, y `notElem` fixed ]
+    Right (dapp (dv (cname i "mk")) (as ++ ds))
   VRefl a -> case whnfT tc t of
     VId ta _ _ -> do
       (ca, la) <- readCode tc ta
@@ -228,6 +249,7 @@ readNf tc t v = case v of
     (d, t') <- readNe tc v
     case (whnfT tc t, whnfT tc t') of
       (VU m, VU l) -> Right (lift tc l m d)
+      (VSegT md fs, _) | Just (VSegT _ fs') <- whnfSafe tc t' -> coerceRec tc md fs fs' d
       _ -> Right d
 
 isTypeVal :: Val -> Bool
@@ -314,11 +336,18 @@ readNe tc v = case v of
       VRec _ tel r -> projField tc dp p tel r l
       -- a field of a record: its selector at the parameters and the element
       VSegT md fs -> do
-        as <- recArgs tc md fs
-        case lookup l (recordFieldUnits md) of
-          Just ta -> Right ( dapp (dv (cname (dataId (modId md)) l)) (as ++ [dp])
-                           , eval (selfEnv md fs p) ta )
-          Nothing -> Left ("no field " ++ l ++ " in " ++ modId md)
+        let fixed = fixedOf md fs
+            ty ta = eval (selfEnvFixed md fs fixed p) ta
+        case (lookup l (recordFieldUnits md), lookup l fixed) of
+          -- a field the type fixes: its value
+          (Just ta, Just v) -> do
+            d <- readNf tc (ty ta) v
+            Right (d, ty ta)
+          (Just ta, Nothing) -> do
+            i <- recId tc md fs
+            as <- recArgsI tc i md fs
+            Right (dapp (dv (cname i l)) (as ++ [dp]), ty ta)
+          _ -> Left ("no field " ++ l ++ " in " ++ modId md)
       t' -> Left ("the projection ." ++ l ++ " of something of type " ++ showT tc t')
   VIdJ a x c d y p -> do
     (ca, la) <- readCode tc a
@@ -357,9 +386,10 @@ readCode tc v = case v of
     Right (dapp (dv (gname d)) as, l)
   VRec _ tel r -> telCode tc tel r
   VSegT md fs -> do
-    as <- recArgs tc md fs
-    l <- recLevel tc md fs
-    Right (dapp (dv (gname (dataId (modId md)))) as, l)
+    i <- recId tc md fs
+    as <- recArgsI tc i md fs
+    l <- recLevel tc i md fs
+    Right (dapp (dv (gname i)) as, l)
   _ -> do
     (d, t) <- readNe tc v
     case whnfT tc t of
@@ -442,20 +472,35 @@ globalArgs tc i r = case M.lookup i (tcGlob tc) of
     -- the element of a record, for its derived members
     PSelf _ _ -> case lookupVal r "%self" of
       w@(VInst m r') -> readNf tc (VSegT m [ (h, lookupDyn r' h) | h <- recordHeads m ]) w
-      w -> fst <$> readNe tc w
+      w -> do
+        -- an element of a record type with fixed fields: as an element of the record
+        (d, ty) <- readNe tc w
+        case whnfSafe tc ty of
+          Just (VSegT md fs) -> coerceRec tc md [ (h, v) | (h, v) <- fs, h `elem` recordHeads md ] fs d
+          _ -> Right d
     PLv x -> Right (dlvl tc (lookupLvl r x))
     PTm x _ -> case lookupVal r x of
       VConst y _ | y == x -> Right (dv (lname x))
       w -> do
-        -- the type of the parameter at this instance
+        -- the type of the parameter at this instance; a type that cannot be
+        -- evaluated there (a record type, whose module the instance does
+        -- not see by its id): the argument read as a neutral term
         t <- paramType x
-        readNf tc t w
+        readArgAt tc t w
   paramType x = case [ t | PTm y t0 <- iParams (tcGlob tc M.! i), y == x, let t = t0 ] of
     (t : _) -> Right (reEval t)
     [] -> Left ("no parameter " ++ x)
   -- the parameter's type, evaluated where it was declared, now at the
   -- instance: re-evaluated in r
   reEval t = t `seq` paramTypeAt r t
+
+-- an argument at the type of its parameter at an instance; a type that
+-- cannot be evaluated there (a record type, whose module the instance does
+-- not see by its id): the argument read as a neutral term
+readArgAt :: TC -> Val -> Val -> T DExp
+readArgAt tc t w = case whnfSafe tc t of
+  Just _ -> readNf tc t w
+  Nothing -> fst <$> readNe tc w
 
 -- the type of a parameter at an instance environment: its type was
 -- evaluated in the segment's own context, where the earlier parameters are
@@ -507,17 +552,77 @@ dataLevel tc d r = case M.lookup d (tcGlob tc) >>= iData of
 recordFieldUnits :: Mod -> [(Name, Exp)]
 recordFieldUnits md = [ (x, a) | UPar _ x a <- modUnits md, x `notElem` recordHeads md ]
 
+-- the fields that a record type fixes (R[ps][x := e]), in the order of the record
+fixedOf :: Mod -> [(Name, Val)] -> [(Name, Val)]
+fixedOf md fs = [ (x, v) | (x, _) <- recordFieldUnits md, Just v <- [lookup x fs] ]
+
+-- a record with the fields xs fixed: a record of its own, its parameters
+-- those of R and the fixed fields, its fields the others
+variantId :: Id -> [Name] -> Id
+variantId rid xs = rid ++ "[" ++ intercalate "," xs ++ "]"
+
+-- the record that a record type is: R, or its variant with the fields the
+-- type fixes; a variant not declared yet is asked for (translateProgram
+-- runs again with it)
+recId :: TC -> Mod -> [(Name, Val)] -> T Id
+recId tc md fs = case map fst (fixedOf md fs) of
+  [] -> Right rid
+  xs | Set.member (rid, xs) (tcVariants tc) -> Right (variantId rid xs)
+     | otherwise -> Left (variantMarker rid xs)
+ where rid = dataId (modId md)
+
+variantMarker :: Id -> [Name] -> String
+variantMarker rid xs = "@@VARIANT " ++ rid ++ "|" ++ intercalate "," xs ++ "@@"
+
+-- the variants asked for in a message
+variantsIn :: String -> [(Id, [Name])]
+variantsIn m = case m of
+  [] -> []
+  _ | "@@VARIANT " `isPrefixOf` m ->
+        let body = takeUntil "@@" (drop 10 m)
+            (rid, xs) = break (== '|') body
+        in (rid, splitOn ',' (drop 1 xs)) : variantsIn (drop (10 + length body + 2) m)
+  _ : m' -> variantsIn m'
+ where
+  takeUntil e str = case str of
+    [] -> []
+    _ | e `isPrefixOf` str -> []
+    c : r -> c : takeUntil e r
+  splitOn c str = case break (== c) str of
+    (a, []) -> [a]
+    (a, _ : r) -> a : splitOn c r
+
+-- an element of R[ps][F] used as an element of R[ps][F']: the same if F'
+-- is F, by the coercion of the variant to R if F' is empty (Unit's
+-- subsumption, without a coercion)
+coerceRec :: TC -> Mod -> [(Name, Val)] -> [(Name, Val)] -> DExp -> T DExp
+coerceRec tc md want have d
+  | wf == hf = Right d
+  | null wf = do
+      i <- recId tc md have
+      as <- recArgsI tc i md have
+      Right (dapp (dv (cname i "up")) (as ++ [d]))
+  | otherwise = Left ("a record with the fields " ++ unwords hf ++ " fixed used as one with " ++ unwords wf)
+ where
+  wf = map fst (fixedOf md want)
+  hf = map fst (fixedOf md have)
+
 -- the arguments of a record type R[ps]: the parameters of its segments, at
 -- the environment of the instance, and its head parameters, from the type
+-- (for a variant, also the fixed fields)
 recArgs :: TC -> Mod -> [(Name, Val)] -> T [DExp]
-recArgs tc md fs = case M.lookup rid (tcGlob tc) >>= iRec of
+recArgs tc md fs = do
+  i <- recId tc md fs
+  recArgsI tc i md fs
+
+recArgsI :: TC -> Id -> Mod -> [(Name, Val)] -> T [DExp]
+recArgsI tc rid md fs = case M.lookup rid (tcGlob tc) >>= iRec of
   Nothing -> Left ("not a record translated: " ++ rid)
   Just ri -> do
     outer <- globalArgs tc rid (modEnv md)
     hs <- heads (modEnv md) (rHeads ri)
     Right (outer ++ hs)
  where
-  rid = dataId (modId md)
   heads _ [] = Right []
   heads r (p : ps) = case p of
     PLv x -> case lookup x fs of
@@ -525,75 +630,99 @@ recArgs tc md fs = case M.lookup rid (tcGlob tc) >>= iRec of
       _ -> Left ("the head level " ++ x ++ " of " ++ rid)
     PTm x t -> case lookup x fs of
       Just v -> do
-        d <- readNf tc (paramTypeAt r t) v
+        d <- readArgAt tc (paramTypeAt r t) v
         (d :) <$> heads (EVar r x v) ps
       Nothing -> Left ("the head parameter " ++ x ++ " of " ++ rid)
     PSelf _ _ -> Left "a record element as a head"
 
 -- the level of a record type at an instance: its level, with the level
 -- parameters of its segments and of its head as the instance gives them
-recLevel :: TC -> Mod -> [(Name, Val)] -> T Lvl
-recLevel tc md fs = case M.lookup rid (tcGlob tc) of
+recLevel :: TC -> Id -> Mod -> [(Name, Val)] -> T Lvl
+recLevel tc rid md fs = case M.lookup rid (tcGlob tc) of
   Just Info { iRec = Just ri, iParams = ps } ->
     let outer = [ (x, lookupLvl (modEnv md) x) | PLv x <- ps ]
         heads = [ (x, l) | PLv x <- rHeads ri, Just (VLvl l) <- [lookup x fs] ]
     in Right (lsubst (\x -> maybe (lvar x) id (lookup x (heads ++ outer))) (rLvl ri))
   _ -> Left ("not a record translated: " ++ rid)
- where rid = dataId (modId md)
 
 -- record R (heads) { fields ; derived members }: the type R, its
 -- constructor R.mk, a selector for each field with its rule, and the
 -- derived members as constants taking the element
 recordDecl :: TC -> Id -> Mod -> Result -> (Glob, Result)
-recordDecl tc i md out = case decls of
-  Left m -> (tcGlob tc, out { rSkipped = (i, "record: " ++ m) : rSkipped out })
-  Right (js, glob, line, extra) ->
-    (glob, extra out { rJmts = reverse js ++ rJmts out, rDkgf = line : rDkgf out, rFull = rFull out + 1 })
+recordDecl tc i md out0 =
+  foldl variant (record (tcGlob tc) [] out0) [ xs | (j, xs) <- Set.toList (tcVariants tc), j == i ]
  where
+  record glob xs out = case recordLike tc { tcGlob = glob } xs of
+    Left m -> (glob, out { rSkipped = (if null xs then i else variantId i xs, "record: " ++ m) : rSkipped out })
+    Right (js, glob', line, extra) ->
+      (glob', extra out { rJmts = reverse js ++ rJmts out, rDkgf = [ line | null xs ] ++ rDkgf out
+                        , rFull = rFull out + 1 })
+  variant (glob, out) xs = record glob xs out
   hs = recordHeads md
-  decls = do
-    -- the head parameters, as the parameters of a segment
-    let tcH = fst (units tc [i] (headUnits md) (Result [] [] 0 [] []))
-        heads = drop (length (tcPars tc)) (tcPars tcH)
+  -- the record (xs empty), or its variant with the fields xs fixed: the
+  -- type, the constructor, the selectors of the fields not fixed, and for a
+  -- variant its coercion R[ps][xs := ..].up to the record; for the record,
+  -- the derived members
+  recordLike tc0 xs = do
+    -- the head parameters (and the fixed fields), as the parameters of a segment
+    let fixedUnits = [ UPar j x a | UPar j x a <- modUnits md, x `elem` xs ]
+        tcH = fst (units tc0 [i] (headUnits md ++ fixedUnits) (Result [] [] 0 [] []))
+        heads = drop (length (tcPars tc0)) (tcPars tcH)
         pnames = map fst (paramBinds tcH)
         tcH' = tcH { tcNames = pnames ++ tcNames tcH }
+        self = if null xs then i else variantId i xs
+        isFixed u = case u of { UPar _ x _ -> x `elem` xs; _ -> False }
     -- the constructor: the fields as variables
-    (_, fields) <- conFields tcH' (filter (not . isHeadUnit) (modUnits md))
+    (_, fields) <- conFields tcH' (filter (\u -> not (isHeadUnit u) && not (isFixed u)) (modUnits md))
     let l = foldr (lmax . (\(_, _, k) -> k)) lzero fields
-        self = dapp (dv (gname i)) (map dv pnames)
-        elT = dapp (dv cEl) [dlvl tcH l, self]
+        selfE = dapp (dv (gname self)) (map dv pnames)
+        elT = dapp (dv cEl) [dlvl tcH l, selfE]
         tyR = closeParams tcH (dapp (dv cU) [dlvl tcH l])
-        mk = cname i "mk"
+        mk = cname self "mk"
         tyMk = closeParams tcH (foldr (\(n, a, _) e -> dpi n a e) elT fields)
-        ri = RecInfo heads (recordFieldUnits md) l
-        glob = M.insert i (Info (tcPars tc) Nothing False (Just ri)) (tcGlob tc)
+        unfixed = [ f | f@(y, _) <- recordFieldUnits md, y `notElem` xs ]
+        ri = RecInfo heads unfixed l
+        glob = M.insert self (Info (tcPars tc0) Nothing False (Just ri)) (tcGlob tc0)
         tcG = tcH' { tcGlob = glob }
     -- the selectors: the element as a variable t, the earlier fields as
-    -- its projections
+    -- its projections, the fixed ones as the parameters
         hv = [ case p of { PLv x -> (x, VLvl (lvar x)); PTm x _ -> (x, lookupVal (cxEnv (tcCx tcH)) x)
                          ; PSelf x _ -> (x, VConst x []) } | p <- heads ]
+        fixedVals = [ (x, v) | (x, v) <- hv, x `elem` xs ]
         selfTy = VSegT md hv
         (tcT, tv, nt) = extend tcG "t" selfTy
-        env = selfEnv md hv tv
+        env = selfEnvFixed md hv fixedVals tv
         fnames = [ n | (n, _, _) <- fields ]
         vars = map (D.PBVar . qid) (pnames ++ fnames)
         lhsMk = pappl mk (map (D.PVar . qid) (pnames ++ fnames))
     sels <- mapM (\((y, ta), n) -> do
                     dt <- readType tcT (eval env ta)
-                    let sel = cname i y
+                    let sel = cname self y
                         ty = closeParams tcH (dpi nt elT dt)
                         rule = D.RRule vars (pappl sel (map (D.PVar . qid) pnames ++ [lhsMk])) (dv n)
                     Right (sel, [D.JDef (qid sel) (D.MTExp ty) D.MENone, D.JRules [rule]]))
-                 (zip (recordFieldUnits md) fnames)
-    -- the derived members, each with the element as its last parameter
+                 (zip unfixed fnames)
+    -- a variant: its coercion to the record, R.mk with all the fields
+    up <- if null xs then Right [] else do
+      ri0 <- maybe (Left ("the record " ++ i ++ " before its variant")) Right (M.lookup i (tcGlob tc0) >>= iRec)
+      let rnames = [ n | (n, p) <- zip pnames (tcPars tcH), notFixed p ]
+          notFixed p = case p of { PTm x _ -> x `notElem` xs; _ -> True }
+          lR = rLvl ri0
+          elR = dapp (dv cEl) [dlvl tcH lR, dapp (dv (gname i)) (map dv rnames)]
+          upN = cname self "up"
+          allFields = [ maybe (dv (lname y)) dv (lookup y (zip (map fst unfixed) fnames)) | (y, _) <- recordFieldUnits md ]
+          rule = D.RRule vars (pappl upN (map (D.PVar . qid) pnames ++ [lhsMk]))
+                   (dapp (dv (cname i "mk")) (map dv rnames ++ allFields))
+      Right [D.JDef (qid upN) (D.MTExp (closeParams tcH (dpi nt elT elR))) D.MENone, D.JRules [rule]]
+    -- the derived members (of the record), each with the element as its last parameter
     let tcD = tcT { tcPars = tcPars tcH ++ [PSelf nt selfTy] }
-        defs = [ u | u@(UDef{}) <- modUnits md ]
+        defs = [ u | null xs, u@(UDef{}) <- modUnits md ]
         globD = foldl (\g (UDef j _ _ _) -> M.insert j (Info (tcPars tcD) Nothing False Nothing) g) glob defs
         tcD' = tcD { tcGlob = globD }
         derived = [ member tcD' env u | u <- defs ]
         line = "#RECORD " ++ gname i ++ " " ++ mk ++ " " ++ unwords (map fst sels)
         extra o = foldl (\o' (_, f) -> f o') o derived
-    Right ( [D.JStatic (qid (gname i)) tyR, D.JStatic (qid mk) tyMk] ++ concatMap snd sels
+    Right ( [D.JStatic (qid (gname self)) tyR, D.JStatic (qid mk) tyMk] ++ concatMap snd sels ++ up
             ++ concatMap fst derived
           , globD, line, extra )
   isHeadUnit u = case u of
@@ -663,11 +792,20 @@ data Result = Result
   }
 
 translateProgram :: [Unit] -> Result
-translateProgram us =
-  let tc0 = TC (programCx us) M.empty M.empty [] M.empty []
-      (_, out) = units tc0 [] us (Result [] [] 0 [] [])
-  in out { rJmts = reverse (rJmts out), rDkgf = reverse (rDkgf out)
-         , rAxioms = reverse (rAxioms out), rSkipped = reverse (rSkipped out) }
+translateProgram us = go Set.empty (0 :: Int)
+ where
+  -- the records with fixed fields that the program uses are found by
+  -- translating it: a variant not yet declared is asked for, and the
+  -- program is translated again with it declared after its record
+  go vs n =
+    let tc0 = TC (programCx us) M.empty M.empty [] M.empty [] vs
+        (_, out) = units tc0 [] us (Result [] [] 0 [] [])
+        asked = Set.fromList [ v | (_, m) <- rSkipped out ++ rAxioms out, v <- variantsIn m ]
+        new = asked `Set.difference` vs
+    in if Set.null new || n >= 10
+         then out { rJmts = reverse (rJmts out), rDkgf = reverse (rDkgf out)
+                  , rAxioms = reverse (rAxioms out), rSkipped = reverse (rSkipped out) }
+         else go (Set.union vs new) (n + 1)
 
 -- the units of a body; the path is the list of enclosing segments
 units :: TC -> [Name] -> [Unit] -> Result -> (TC, Result)

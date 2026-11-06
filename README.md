@@ -67,6 +67,16 @@ The encoding is in `prelude.dk`, printed at the head of the output:
   nominal and have no eta in Unit, so neither here. The `.dkgf` output has a
   line `#RECORD R R.mk selectors` for each record, for Informath to read
   the constructor as a structure definition.
+- **Records with fixed fields** (`R[ps][x := e]`, RECORDS.md §4, as
+  `isEquiv A B f = IsEquiv[A, B, f]`): a record of their own,
+  `{|R[x]|}`, whose parameters are those of `R` and the fixed fields, and
+  whose fields are the others, with its constructor and selectors, and a
+  coercion `{|R[x].up|}` to `R` (its rule gives `R.mk` with all the fields),
+  inserted where Unit uses an element of `R[ps][x := e]` as one of `R[ps]`
+  (subsumption, which Unit has without a coercion). A projection of a fixed
+  field is its value. The variants a program uses are found by translating
+  it: one not declared yet is asked for, and the program is translated
+  again with it declared after its record.
 
 Names: a declaration keeps its qualified Unit name, quoted (`{|Prelude.sym|}`);
 a constructor is `{|D.c|}`.
@@ -75,9 +85,6 @@ a constructor is `{|D.c|}`.
 
 - Indexed inductive families (`data D (ps) : (is : Ixs) -> U l`), in Unit
   since 5 November: their declarations and the splits on them become axioms.
-- Partially fixed record types `R[ps][x := e]` (RECORDS.md §4) are read as
-  `R[ps]`, which loses the fixed values: what uses them (`isEquiv A B f`)
-  does not type-check.
 - Level constraints (`constraint a <= l`) and constraint products are
   dropped; the plan is to encode `a <= l` by writing `l` as `lmax a l'`.
 - Conversion that Unit has and the encoding only partly has: eta for Sigma

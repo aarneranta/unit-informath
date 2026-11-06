@@ -11,6 +11,16 @@ defac lmax [Lvl].
 [l] lmax l (ls l) --> ls l.
 [l] lmax l (ls (ls l)) --> ls (ls l).
 [l] lmax l (ls (ls (ls l))) --> ls (ls (ls l)).
+(; the same inside a longer lmax (r the other arguments, as AC matching
+   needs), and l below the successor of a join containing it: after the
+   successors are joined, ls k \/ k \/ ls l is k \/ ls (k \/ l) ;)
+[l, r] lmax l (lmax l r) --> lmax l r.
+[l, r] lmax l (lmax (ls l) r) --> lmax (ls l) r.
+[l, r] lmax l (lmax (ls (ls l)) r) --> lmax (ls (ls l)) r.
+[l, r] lmax l (ls (lmax l r)) --> ls (lmax l r).
+[l, r, s] lmax l (lmax (ls (lmax l r)) s) --> lmax (ls (lmax l r)) s.
+[l, r] lmax l (ls (ls (lmax l r))) --> ls (ls (lmax l r)).
+[l, r, s] lmax l (lmax (ls (ls (lmax l r))) s) --> lmax (ls (ls (lmax l r))) s.
 
 (; universes a la Tarski, cumulative by lift.  A code is kept at its least
    level with one lift outside: the rules below move lifts out of the type
